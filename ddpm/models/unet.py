@@ -22,7 +22,7 @@ class UNet(Module):
             dim: int,
             init_dim: Optional[int] = None,
             out_dim: Optional[int] = None,
-            channels: int = 3,
+            in_channels: int = 3,
             channels_multipliers: Tuple[int, ...] = (1, 2, 4, 8),
             self_condition: bool = False,
             learned_variance: bool = False,
@@ -38,7 +38,7 @@ class UNet(Module):
             dim (int): Base dimension for the model.
             init_dim (Optional[int], optional): Initial dimension for the first convolution. Defaults to None.
             out_dim (Optional[int], optional): Output dimension. Defaults to None.
-            channels (int): Number of input channels. Defaults to 3.
+            in_channels (int): Number of input channels. Defaults to 3.
             channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 4, 8).
             self_condition (bool): Whether to use self-conditioning. Defaults to False.
             learned_variance (bool): Whether to learn variance. Defaults to False.
@@ -49,10 +49,10 @@ class UNet(Module):
         """
         super().__init__()
         self.dim = dim
-        self.channels = channels
+        self.in_channels = in_channels
         self.self_condition = self_condition
 
-        in_channels = channels * (2 if self_condition else 1)
+        in_channels = in_channels * (2 if self_condition else 1)
         init_dim = dim if init_dim is None else init_dim
         self.init_conv = nn.Conv2d(in_channels, init_dim, (7, 7), padding=(3, 3))
 
@@ -128,7 +128,7 @@ class UNet(Module):
                 Upsample(out_dim, in_dim) if not is_last else nn.Conv2d(out_dim, in_dim, (3, 3), padding=(1, 1))
             ]))
 
-        default_out_dim = channels * (1 if not learned_variance else 2)
+        default_out_dim = in_channels * (1 if not learned_variance else 2)
         self.out_dim = default_out_dim if out_dim is None else out_dim
 
         self.final_res_block = residual_block(init_dim * 2, init_dim)
