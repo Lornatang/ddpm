@@ -1,27 +1,29 @@
 # Copyright (c) Lornatang. All rights reserved.
 from functools import partial
-from typing import Tuple
+from typing import Optional, Tuple
 
+import torch
 from torch import nn, Module
 
 from ddpm.modules.attention import Attention, LinearAttention
-from ddpm.modules.residual import Residual
-
-from ddpm.modules.sinusoidal_pos_embedding import SinusoidalPosEmbedding
-import torch
-
-from ddpm.modules.upsampling import Upsample
 from ddpm.modules.downsampling import Downsample
+from ddpm.modules.residual import Residual
+from ddpm.modules.sinusoidal_pos_embedding import SinusoidalPosEmbedding
+from ddpm.modules.upsampling import Upsample
+
+__all__ = [
+    "UNet",
+]
 
 
 class UNet(Module):
     def __init__(
             self,
             dim: int,
-            init_dim: int = None,
-            out_dim: int = None,
+            init_dim: Optional[int] = None,
+            out_dim: Optional[int] = None,
             channels: int = 3,
-            channels_multipliers: Tuple = (1, 2, 4, 8),
+            channels_multipliers: Tuple[int, ...] = (1, 2, 4, 8),
             self_condition: bool = False,
             learned_variance: bool = False,
             sinusoidal_pos_emb_theta: int = 10000,
@@ -29,6 +31,22 @@ class UNet(Module):
             attn_dim_head: int = 32,
             attn_heads: int = 4,
     ) -> None:
+        """
+        Initializes the UNet module.
+
+        Args:
+            dim (int): Base dimension for the model.
+            init_dim (Optional[int], optional): Initial dimension for the first convolution. Defaults to None.
+            out_dim (Optional[int], optional): Output dimension. Defaults to None.
+            channels (int): Number of input channels. Defaults to 3.
+            channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 4, 8).
+            self_condition (bool): Whether to use self-conditioning. Defaults to False.
+            learned_variance (bool): Whether to learn variance. Defaults to False.
+            sinusoidal_pos_emb_theta (int): Theta value for sinusoidal positional embedding. Defaults to 10000.
+            dropout (float): Dropout rate. Defaults to 0.
+            attn_dim_head (int): Dimension of each attention head. Defaults to 32.
+            attn_heads (int): Number of attention heads. Defaults to 4.
+        """
         super().__init__()
         self.dim = dim
         self.channels = channels
@@ -113,10 +131,27 @@ class UNet(Module):
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
     @property
-    def downsample_factor(self):
+    def downsample_factor(self) -> int:
+        """
+        Returns the downsample factor of the UNet.
+
+        Returns:
+            int: Downsample factor.
+        """
         return 2 ** (len(self.downs) - 1)
 
-    def forward(self, x, time, x_self_cond=None):
+    def forward(self, x: torch.Tensor, time: torch.Tensor, x_self_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass for the UNet module.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            time (torch.Tensor): Time embedding tensor.
+            x_self_cond (Optional[torch.Tensor], optional): Self-conditioning tensor. Defaults to None.
+
+        Returns:
+            torch.Tensor: Output tensor after passing through the UNet.
+        """
         assert all(
             [
                 (d % self.downsample_factor) == 0 for d in x.shape[-2:]
