@@ -1,0 +1,71 @@
+# Copyright (c) Lornatang. All rights reserved.
+from collections import namedtuple
+
+import torch
+from torch import nn
+from torch.nn import functional as F_torch
+
+AttentionConfig = namedtuple("AttentionConfig", ["enable_flash", "enable_math", "enable_mem_efficient"])
+
+__all__ = [
+    "Attend",
+]
+
+
+class Attend(nn.Module):
+    def __init__(
+            self,
+            dropout: float = 0.,
+            flash: bool = False,
+            scale: float = None
+    ) -> None:
+        """Initializes the Attend module.
+
+        Args:
+            dropout (float, optional): Dropout rate. Defaults to 0.
+            flash (bool, optional): Whether to use flash attention. Defaults to False.
+            scale (float, optional): Scaling factor for attention. Defaults to None.
+        """
+        super().__init__()
+        self.dropout = dropout
+        self.scale = scale
+        self.attn_dropout = nn.Dropout(dropout)
+        self.flash = flash
+        self.cuda_config = AttentionConfig(True, False, False)
+
+    def flash_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Computes flash attention.
+
+        Args:
+            q (torch.Tensor): Query tensor.
+            k (torch.Tensor): Key tensor.
+            v (torch.Tensor): Value tensor.
+
+        Returns:
+            torch.Tensor: Output tensor after applying flash attention.
+        """
+        if self.scale is not None:
+            default_scale = q.shape[-1]
+            q = q * (self.scale / default_scale)
+
+        q, k, v = map(lambda t: t.contiguous(), (q, k, v))
+        with torch.backends.cuda.sdp_kernel(**self.cuda_config._asdict()):
+            out = F_torch.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.dropout if self.training else 0.
+            )
+
+        return out
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        """Forward pass for the Attend module.
+
+        Args:
+            q (torch.Tensor): Query tensor.
+            k (torch.Tensor): Key tensor.
+            v (torch.Tensor): Value tensor.
+
+        Returns:
+            torch.Tensor: Output tensor after applying attention.
+        """
+        return self.flash_attn(q, k, v)
