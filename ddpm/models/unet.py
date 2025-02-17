@@ -87,7 +87,7 @@ class UNet(Module):
         num_resolutions = len(out_channel_list)
 
         for i, (
-                (dim_in, dim_out),
+                (in_dim, out_dim),
                 layer_full_attn,
                 layer_attn_heads,
                 layer_attn_dim_head
@@ -102,10 +102,10 @@ class UNet(Module):
             is_last = i >= (num_resolutions - 1)
             attn_klass = attention_block if layer_full_attn else LinearAttention
             self.downs.append(nn.ModuleList([
-                residual_block(dim_in, dim_in),
-                residual_block(dim_in, dim_in),
-                attn_klass(dim_in, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
-                Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, (3, 3), padding=(1, 1))
+                residual_block(in_dim, in_dim),
+                residual_block(in_dim, in_dim),
+                attn_klass(in_dim, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
+                Downsample(in_dim, out_dim) if not is_last else nn.Conv2d(in_dim, out_dim, (3, 3), padding=(1, 1))
             ]))
 
         midden_dim = dim_list[-1]
@@ -113,15 +113,19 @@ class UNet(Module):
         self.mid_attn = attention_block(midden_dim, heads=attn_heads[-1], dim_head=attn_dim_head[-1])
         self.mid_block2 = residual_block(midden_dim, midden_dim)
 
-        for i, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(
-                zip(*map(reversed, (out_channel_list, full_attn, attn_heads, attn_dim_head)))):
+        for i, (
+                (in_dim, out_dim),
+                layer_full_attn,
+                layer_attn_heads,
+                layer_attn_dim_head
+        ) in enumerate(zip(*map(reversed, (out_channel_list, full_attn, attn_heads, attn_dim_head)))):
             is_last = i == (len(out_channel_list) - 1)
             attn_klass = attention_block if layer_full_attn else LinearAttention
             self.ups.append(nn.ModuleList([
-                residual_block(dim_out + dim_in, dim_out),
-                residual_block(dim_out + dim_in, dim_out),
-                attn_klass(dim_out, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
-                Upsample(dim_out, dim_in) if not is_last else nn.Conv2d(dim_out, dim_in, (3, 3), padding=(1, 1))
+                residual_block(out_dim + in_dim, out_dim),
+                residual_block(out_dim + in_dim, out_dim),
+                attn_klass(out_dim, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
+                Upsample(out_dim, in_dim) if not is_last else nn.Conv2d(out_dim, in_dim, (3, 3), padding=(1, 1))
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
@@ -132,8 +136,7 @@ class UNet(Module):
 
     @property
     def downsample_factor(self) -> int:
-        """
-        Returns the downsample factor of the UNet.
+        """Returns the downsample factor of the UNet.
 
         Returns:
             int: Downsample factor.
@@ -141,8 +144,7 @@ class UNet(Module):
         return 2 ** (len(self.downs) - 1)
 
     def forward(self, x: torch.Tensor, time: torch.Tensor, x_self_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Forward pass for the UNet module.
+        """Forward pass for the UNet module.
 
         Args:
             x (torch.Tensor): Input tensor.

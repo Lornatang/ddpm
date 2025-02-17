@@ -34,6 +34,7 @@ class Attention(nn.Module):
         self.heads: int = heads
         hidden_dim = dim_head * heads
 
+        # TODO: maybe not equal un-official implementation
         self.norm: nn.Module = nn.RMSNorm(dim)
         self.attend: Attend = Attend(flash=flash)
 

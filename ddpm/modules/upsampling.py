@@ -19,7 +19,7 @@ class Upsample(nn.Module):
         """
         super().__init__()
         out_channels = in_channels if out_channels is None else out_channels
-        self.upsample = nn.Sequential(
+        self.upsample: nn.Module = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv2d(in_channels, out_channels, 3, padding=1)
         )
@@ -34,4 +34,3 @@ class Upsample(nn.Module):
             torch.Tensor: Output tensor after upsampling and convolution.
         """
         return self.upsample(x)
-
