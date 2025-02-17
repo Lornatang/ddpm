@@ -1,1 +1,1 @@
-# Copyright (c) AlphaBetter. All rights reserved.
+# Copyright (c) Lornatang. All rights reserved.
