@@ -129,7 +129,7 @@ class UNet(Module):
             ]))
 
         default_out_dim = in_channels * (1 if not learned_variance else 2)
-        self.out_dim = default_out_dim if out_dim is None else out_dim
+        self.out_dim = out_dim if default_out_dim is None else default_out_dim
 
         self.final_res_block = residual_block(init_dim * 2, init_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
