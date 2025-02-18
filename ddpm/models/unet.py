@@ -3,7 +3,7 @@ from functools import partial
 from typing import Optional, Tuple
 
 import torch
-from torch import nn, Module
+from torch import nn
 
 from ddpm.modules.attention import Attention, LinearAttention
 from ddpm.modules.downsampling import Downsample
@@ -16,7 +16,7 @@ __all__ = [
 ]
 
 
-class UNet(Module):
+class UNet(nn.Module):
     def __init__(
             self,
             dim: int,
@@ -62,12 +62,12 @@ class UNet(Module):
         # time embedding
         sinusoidal_pos_embedding = SinusoidalPosEmbedding(dim, sinusoidal_pos_emb_theta)
         fourier_dim = dim
-        time_dim = dim * 4
+        time_embedding_dim = dim * 4
         self.time_mlp = nn.Sequential(
             sinusoidal_pos_embedding,
-            nn.Linear(fourier_dim, time_dim),
+            nn.Linear(fourier_dim, time_embedding_dim),
             nn.GELU(),
-            nn.Linear(time_dim, time_dim)
+            nn.Linear(time_embedding_dim, time_embedding_dim)
         )
 
         # attention
@@ -79,7 +79,7 @@ class UNet(Module):
 
         # prepare blocks
         attention_block = partial(Attention, flash=True)
-        residual_block = partial(Residual, time_emb_dim=time_dim, dropout=dropout)
+        residual_block = partial(Residual, time_embedding_dim=time_embedding_dim, dropout=dropout)
 
         # layers
         self.downs = nn.ModuleList([])

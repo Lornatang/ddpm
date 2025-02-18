@@ -27,10 +27,9 @@ def sigmoid_beta_schedule(
     t = torch.linspace(0, time_steps, steps, dtype=torch.float64, device="cpu") / time_steps
     v_start = torch.sigmoid(torch.tensor(start / tau, dtype=torch.float64, device="cpu"))
     v_end = torch.sigmoid(torch.tensor(end / tau, dtype=torch.float64, device="cpu"))
-    alphas_cumulative_prod = torch.sigmoid(-((t * (end - start) + start) / tau))
-    alphas_cumulative_prod = (alphas_cumulative_prod + v_end - 1) / (v_end - v_start)
-    alphas_cumulative_prod /= alphas_cumulative_prod[0]
-    betas = 1 - (alphas_cumulative_prod[1:] / alphas_cumulative_prod[:-1])
+    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     betas.clamp_(0, 0.999)
     
     return betas

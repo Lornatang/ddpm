@@ -30,10 +30,10 @@ class SinusoidalPosEmbedding(nn.Module):
         Returns:
             torch.Tensor: Sinusoidal position embedding tensor.
         """
-        device = x.device
         half_dim = self.dim // 2
         embedding = math.log(self.theta) / (half_dim - 1)
-        embedding = torch.exp(torch.arange(half_dim, device=device) * -embedding)
+        embedding = torch.exp(torch.arange(half_dim, device=x.device) * -embedding)
         embedding = x[:, None] * embedding[None, :]
+        embedding = torch.cat((embedding.sin(), embedding.cos()), -1)
 
         return embedding

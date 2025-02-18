@@ -26,7 +26,7 @@ class Residual(nn.Module):
         self.mlp: Optional[nn.Sequential] = None
         if time_embedding_dim is not None:
             self.mlp = nn.Sequential(
-                nn.SiLU(True),
+                nn.SiLU(),
                 nn.Linear(time_embedding_dim, dim_out * 2)
             )
 

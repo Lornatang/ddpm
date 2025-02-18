@@ -1,7 +1,10 @@
 # Copyright (c) Lornatang. All rights reserved.
-from torch import nn
-import torch
 from typing import Optional, Tuple
+
+import torch
+from torch import nn
+
+from .activation import RMSNorm
 
 __all__ = [
     "Block",
@@ -9,17 +12,17 @@ __all__ = [
 
 
 class Block(nn.Module):
-    def __init__(self, dim: int, dim_out: int, dropout: float = 0.) -> None:
+    def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.) -> None:
         """Initializes the Block module.
 
         Args:
-            dim (int): Dimension of the input.
-            dim_out (int): Dimension of the output.
+            in_channels (int): Dimension of the input.
+            out_channels (int): Dimension of the output.
             dropout (float, optional): Dropout rate. Defaults to 0.
         """
         super().__init__()
-        self.proj: nn.Module = nn.Conv2d(dim, dim_out, 3, padding=1)
-        self.norm: nn.Module = nn.RMSNorm(dim_out)
+        self.proj: nn.Module = nn.Conv2d(in_channels, out_channels, (3, 3), padding=(1, 1))
+        self.norm: nn.Module = RMSNorm(out_channels)
         self.act: nn.Module = nn.SiLU(True)
         self.dropout: nn.Module = nn.Dropout(dropout, True)
 

@@ -1,11 +1,8 @@
 # Copyright (c) Lornatang. All rights reserved.
-from collections import namedtuple
-
 import torch
 from torch import nn
 from torch.nn import functional as F_torch
-
-AttentionConfig = namedtuple("AttentionConfig", ["enable_flash", "enable_math", "enable_mem_efficient"])
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 __all__ = [
     "Attend",
@@ -29,9 +26,8 @@ class Attend(nn.Module):
         super().__init__()
         self.dropout = dropout
         self.scale = scale
-        self.attn_dropout = nn.Dropout(dropout)
+        self.attn_dropout = nn.Dropout(dropout, True)
         self.flash = flash
-        self.cuda_config = AttentionConfig(True, False, False)
 
     def flash_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Computes flash attention.
@@ -49,7 +45,7 @@ class Attend(nn.Module):
             q = q * (self.scale / default_scale)
 
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
-        with torch.backends.cuda.sdp_kernel(**self.cuda_config._asdict()):
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             out = F_torch.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=self.dropout if self.training else 0.

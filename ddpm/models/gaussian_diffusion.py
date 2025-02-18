@@ -1,7 +1,7 @@
 # Copyright (c) Lornatang. All rights reserved.
 import random
 from collections import namedtuple
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import torch
 from einops import rearrange, reduce
@@ -23,10 +23,10 @@ __all__ = [
 class GaussianDiffusion(nn.Module):
     def __init__(
             self,
-            model: nn.Module,
+            model: Any,
             image_size: Union[int, Tuple[int, int]],
             time_steps: int = 1000,
-            sampling_time_steps: Optional[int] = None,
+            sampling_time_steps: int = 250,
             offset_noise_strength: float = 0.,
             min_snr_loss_weight: bool = False,
             min_snr_gamma: int = 5,
@@ -36,20 +36,20 @@ class GaussianDiffusion(nn.Module):
         Initializes the GaussianDiffusion model.
 
         Args:
-            model (nn.Module): The neural network model used for diffusion.
+            model (Any): The neural network model used for diffusion.
             image_size (Union[int, Tuple[int, int]]): The size of the input images.
             time_steps (int, optional): The number of time steps for the diffusion process. Defaults to 1000.
-            sampling_time_steps (Optional[int], optional): The number of time steps for sampling. Defaults to None.
+            sampling_time_steps (int, optional): The number of time steps for sampling. Defaults to 250.
             offset_noise_strength (float, optional): The strength of the offset noise. Defaults to 0.
             min_snr_loss_weight (bool, optional): Whether to use minimum SNR loss weight. Defaults to False.
             min_snr_gamma (int, optional): The gamma value for minimum SNR. Defaults to 5.
             immiscible (bool, optional): Whether to use immiscible diffusion. Defaults to False.
         """
         super().__init__()
-        assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim), "model must have the same number of channels as out_dim"
+        assert not (type(self) == GaussianDiffusion and model.in_channels != model.out_dim), "model must have the same number of channels as out_dim"
 
         self.model = model
-        self.channels = self.model.channels
+        self.in_channels = self.model.in_channels
         self.self_condition = self.model.self_condition
 
         # Ensure image_size is a tuple of two integers
@@ -63,7 +63,7 @@ class GaussianDiffusion(nn.Module):
 
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, 0)
-        alphas_cum_prod_prev = F_torch.pad(alphas_cumprod[:-1], (1, 0), value=1.)
+        alphas_cumprod_prev = F_torch.pad(alphas_cumprod[:-1], (1, 0), value=1.)
 
         time_steps, = betas.shape
         self.num_time_steps = int(time_steps)
@@ -77,7 +77,7 @@ class GaussianDiffusion(nn.Module):
 
         register_buffer("betas", betas)
         register_buffer("alphas_cumprod", alphas_cumprod)
-        register_buffer("alphas_cumprod_prev", alphas_cum_prod_prev)
+        register_buffer("alphas_cumprod_prev", alphas_cumprod_prev)
 
         # Calculations for diffusion q(x_t | x_{t-1}) and others
         register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
@@ -87,11 +87,11 @@ class GaussianDiffusion(nn.Module):
         register_buffer("sqrt_recipm1_alphas_cumprod", torch.sqrt(1. / alphas_cumprod - 1))
 
         # Calculations for posterior q(x_{t-1} | x_t, x_0)
-        posterior_variance = betas * (1. - alphas_cum_prod_prev) / (1. - alphas_cumprod)
+        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
         register_buffer("posterior_variance", posterior_variance)
         register_buffer("posterior_log_variance_clipped", torch.log(posterior_variance.clamp(min=1e-20)))
-        register_buffer("posterior_mean_coef1", betas * torch.sqrt(alphas_cum_prod_prev) / (1. - alphas_cumprod))
-        register_buffer("posterior_mean_coef2", (1. - alphas_cum_prod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
+        register_buffer("posterior_mean_coef1", betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
+        register_buffer("posterior_mean_coef2", (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
 
         # Immiscible diffusion
         self.immiscible = immiscible
@@ -242,7 +242,7 @@ class GaussianDiffusion(nn.Module):
         Returns:
             Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
         """
-        (height, width), channels = self.image_size, self.channels
+        (height, width), channels = self.image_size, self.in_channels
         sample = self.p_sample_loop((batch_size, channels, height, width), return_all_time_steps)
 
         return sample
@@ -277,15 +277,15 @@ class GaussianDiffusion(nn.Module):
             torch.Tensor: The noisy image tensor at time step `t`.
         """
         if noise is None:
-            noise = torch.randn_like(x_start)
+            noise = torch.randn_like(x_start, device=x_start.device)
 
         if self.immiscible:
             assign = self.noise_assignment(x_start, noise)
             noise = noise[assign]
 
         return (
-                extract(self.sqrt_alphas_cum_prod, time_step, x_start.shape) * x_start +
-                extract(self.sqrt_one_minus_alphas_cum_prod, time_step, x_start.shape) * noise
+                extract(self.sqrt_alphas_cumprod, time_step, x_start.shape) * x_start +
+                extract(self.sqrt_one_minus_alphas_cumprod, time_step, x_start.shape) * noise
         )
 
     def prediction_latent_var(self, x_start: torch.Tensor, latent_var: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
@@ -300,8 +300,8 @@ class GaussianDiffusion(nn.Module):
             torch.Tensor: The predicted latent variable tensor.
         """
         return (
-                extract(self.sqrt_alphas_cum_prod, latent_var, x_start.shape) * noise -
-                extract(self.sqrt_one_minus_alphas_cum_prod, latent_var, x_start.shape) * x_start
+                extract(self.sqrt_alphas_cumprod, latent_var, x_start.shape) * noise -
+                extract(self.sqrt_one_minus_alphas_cumprod, latent_var, x_start.shape) * x_start
         )
 
     def prediction_start_from_latent_var(self, x_time_step: torch.Tensor, time_step: torch.Tensor, latent_var: torch.Tensor) -> torch.Tensor:
@@ -316,8 +316,8 @@ class GaussianDiffusion(nn.Module):
             torch.Tensor: The predicted starting image tensor.
         """
         return (
-                extract(self.sqrt_alphas_cum_prod, time_step, x_time_step.shape) * x_time_step -
-                extract(self.sqrt_one_minus_alphas_cum_prod, time_step, x_time_step.shape) * latent_var
+                extract(self.sqrt_alphas_cumprod, time_step, x_time_step.shape) * x_time_step -
+                extract(self.sqrt_one_minus_alphas_cumprod, time_step, x_time_step.shape) * latent_var
         )
 
     def prediction_noise_from_start(self, x_time_step: torch.Tensor, time_step: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
@@ -332,8 +332,8 @@ class GaussianDiffusion(nn.Module):
             torch.Tensor: The predicted noise tensor.
         """
         return (
-                (extract(self.sqrt_recip_alphas_cum_prod, time_step, x_time_step.shape) * x_time_step - x0) /
-                extract(self.sqrt_recipm1_alphas_cum_prod, time_step, x_time_step.shape)
+                (extract(self.sqrt_recip_alphas_cumprod, time_step, x_time_step.shape) * x_time_step - x0) /
+                extract(self.sqrt_recipm1_alphas_cumprod, time_step, x_time_step.shape)
         )
 
     def model_predictions(
@@ -385,7 +385,7 @@ class GaussianDiffusion(nn.Module):
             torch.Tensor: The computed loss.
         """
         if noise is None:
-            noise = torch.randn_like(x_start)
+            noise = torch.randn_like(x_start, device=x_start.device)
 
         offset_noise_strength = self.offset_noise_strength if offset_noise_strength is None else offset_noise_strength
         if offset_noise_strength > 0.:

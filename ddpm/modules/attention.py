@@ -5,6 +5,7 @@ import torch
 from einops import rearrange, repeat
 from torch import nn
 
+from .activation import RMSNorm
 from .attend import Attend
 
 __all__ = [
@@ -34,8 +35,7 @@ class Attention(nn.Module):
         self.heads: int = heads
         hidden_dim = dim_head * heads
 
-        # TODO: maybe not equal un-official implementation
-        self.norm: nn.Module = nn.RMSNorm(dim)
+        self.norm: nn.Module = RMSNorm(dim)
         self.attend: Attend = Attend(flash=flash)
 
         self.mem_kv: nn.Parameter = nn.Parameter(torch.randn(2, heads, num_mem_kv, dim_head))
@@ -62,7 +62,10 @@ class Attention(nn.Module):
         k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
         out = self.attend(q, k, v)
-        return self.to_out(out)
+        out = rearrange(out, "b h (x y) d -> b (h d) x y", x=h, y=w)
+        out = self.to_out(out)
+
+        return out
 
 
 class LinearAttention(nn.Module):
@@ -86,14 +89,14 @@ class LinearAttention(nn.Module):
         self.heads: int = heads
         hidden_dim = dim_head * heads
 
-        self.norm: nn.Module = nn.RMSNorm(dim)
+        self.norm: nn.Module = RMSNorm(dim)
 
         self.mem_kv: nn.Parameter = nn.Parameter(torch.randn(2, heads, dim_head, num_mem_kv))
         self.to_qkv: nn.Module = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
 
         self.to_out: nn.Module = nn.Sequential(
             nn.Conv2d(hidden_dim, dim, 1),
-            nn.RMSNorm(dim)
+            RMSNorm(dim)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -115,10 +118,15 @@ class LinearAttention(nn.Module):
         mk, mv = map(lambda t: repeat(t, "h c n -> b h c n", b=b), self.mem_kv)
         k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
 
-        k = k.softmax(dim=-1)
+        q = q.softmax(dim = -2)
+        k = k.softmax(dim = -1)
+
         q = q * self.scale
 
         context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
-        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
 
-        return self.to_out(out)
+        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
+        out = rearrange(out, "b h c (x y) -> b (h c) x y", h=self.heads, x=h, y=w)
+        out = self.to_out(out)
+
+        return out
