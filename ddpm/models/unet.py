@@ -78,7 +78,7 @@ class UNet(nn.Module):
         assert len(full_attn) == len(channels_multipliers)
 
         # prepare blocks
-        attention_block = partial(Attention, flash=True)
+        attention_block = partial(Attention, flash=False)
         residual_block = partial(Residual, time_embedding_dim=time_embedding_dim, dropout=dropout)
 
         # layers
@@ -182,15 +182,15 @@ class UNet(nn.Module):
 
         # Upsampling path
         for block1, block2, attention, upsample in self.ups:
-            x = torch.cat((x, hidden_states.pop()), 1)
+            x = torch.cat((x, hidden_states.pop()), dim=1)
             x = block1(x, time_embedding)
-            x = torch.cat((x, hidden_states.pop()), 1)
+            x = torch.cat((x, hidden_states.pop()), dim=1)
             x = block2(x, time_embedding)
             x = attention(x) + x
             x = upsample(x)
 
         # Final block
-        x = torch.cat((x, residual), 1)
+        x = torch.cat((x, residual), dim=1)
         x = self.final_res_block(x, time_embedding)
         x = self.final_conv(x)
 

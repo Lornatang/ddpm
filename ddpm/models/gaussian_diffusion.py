@@ -355,11 +355,9 @@ class GaussianDiffusion(nn.Module):
             ModelPrediction: The predicted noise and x_start tensors.
         """
         model_output = self.model(x, time_step, self_condition)
-        if clip_x_start:
-            model_output.clamp_(-1., 1.)
 
         x_start = self.prediction_start_from_latent_var(x, time_step, model_output)
-        if x_start:
+        if clip_x_start:
             x_start.clamp_(-1., 1.)
 
         pred_noise = self.prediction_noise_from_start(x, time_step, x_start)

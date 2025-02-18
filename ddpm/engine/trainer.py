@@ -10,11 +10,12 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm.auto import tqdm
-
+from torchvision import utils as vutils
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
 from ddpm.utils.ema import ModelEMA
 from ddpm.utils.torch_utils import select_device
+from ddpm.utils.ops import num_to_groups
 
 
 class Trainer:
@@ -118,6 +119,7 @@ class Trainer:
         self.optimizer.zero_grad()
         if self.ema:
             self.ema.update(self.diffusion_model)
+        self.step += 1
 
     def save(self, milestone: str) -> None:
         """Save model and ema model states to disk.
@@ -138,7 +140,6 @@ class Trainer:
                 self.diffusion_model.train()
 
                 total_loss = 0.
-
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.data_loader).to(self.device)
 
@@ -151,35 +152,32 @@ class Trainer:
                     # Backward
                     self.scaler.scale(loss).backward()
 
-                pbar.set_description(f"loss: {total_loss:.4f}")
+                pbar.set_description(f"Loss: {total_loss:.4e}")
 
+                # Update optimizer
                 self.optimizer_step()
-                self.step += 1
 
-                # if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
-                #     self.ema.ema_model.eval()
-                #
-                #     with torch.inference_mode():
-                #         milestone = self.step // self.save_and_sample_every
-                #         batches = num_to_groups(self.num_samples, self.batch_size)
-                #         all_images_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
-                #
-                #     all_images = torch.cat(all_images_list, dim=0)
-                #
-                #     utils.save_image(all_images, str(self.save_dir / f"sample-{milestone}.png"), nrow=int(math.sqrt(self.num_samples)))
-                #
-                #     # whether to calculate fid
-                #
-                #     if self.calculate_fid:
-                #         fid_score = self.fid_scorer.fid_score()
-                #         accelerator.print(f"fid_score: {fid_score}")
-                #
-                #     if self.save_best_and_latest_only:
-                #         if self.best_fid > fid_score:
-                #             self.best_fid = fid_score
-                #             self.save("best")
-                #         self.save("latest")
-                #     else:
-                #         self.save(milestone)
-                #
-                # pbar.update(1)
+                # Save and sample
+                if self.step != 0 and (self.step % self.save_and_sample_every) == 0:
+                    self.ema.ema.eval()
+
+                    with torch.no_grad():
+                        batches = num_to_groups(self.num_samples, self.batch_size)
+                        all_images_list = list(map(lambda num_images: self.ema.ema.sample(batch_size=num_images), batches))
+
+                    all_images = torch.cat(all_images_list, dim=0)
+                    vutils.save_image(all_images, Path(self.save_dir, "samples", f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
+
+                    # whether to calculate fid
+                    # if self.calculate_fid:
+                    #     fid_score = self.fid_scorer.fid_score()
+                    #     accelerator.print(f"fid_score: {fid_score}")
+
+                    # if self.best_fid > fid_score:
+                    #     self.best_fid = fid_score
+                    #     self.save("best")
+                    #     self.save("latest")
+                    # else:
+                    #     self.save(milestone)
+
+                pbar.update(1)

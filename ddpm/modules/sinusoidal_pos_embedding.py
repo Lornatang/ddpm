@@ -34,6 +34,6 @@ class SinusoidalPosEmbedding(nn.Module):
         embedding = math.log(self.theta) / (half_dim - 1)
         embedding = torch.exp(torch.arange(half_dim, device=x.device) * -embedding)
         embedding = x[:, None] * embedding[None, :]
-        embedding = torch.cat((embedding.sin(), embedding.cos()), -1)
+        embedding = torch.cat((embedding.sin(), embedding.cos()), dim=-1)
 
         return embedding

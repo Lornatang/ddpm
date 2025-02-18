@@ -3,7 +3,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F_torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
-
 __all__ = [
     "Attend",
 ]
@@ -26,7 +25,7 @@ class Attend(nn.Module):
         super().__init__()
         self.dropout = dropout
         self.scale = scale
-        self.attn_dropout = nn.Dropout(dropout, True)
+        self.attn_dropout = nn.Dropout(dropout)
         self.flash = flash
 
     def flash_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -46,10 +45,7 @@ class Attend(nn.Module):
 
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-            out = F_torch.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.
-            )
+            out = F_torch.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.)
 
         return out
 
@@ -64,4 +60,17 @@ class Attend(nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying attention.
         """
-        return self.flash_attn(q, k, v)
+        if self.flash:
+            return self.flash_attn(q, k, v)
+
+        scale = q.shape[-1] ** -0.5 if self.scale is None else self.scale
+
+        # similarity
+        sim = torch.einsum(f"b h i d, b h j d -> b h i j", q, k) * scale
+
+        # attention
+        attn = sim.softmax(dim=-1)
+        attn = self.attn_dropout(attn)
+        out = torch.einsum(f"b h i j, b h j d -> b h i d", attn, v)
+
+        return out
