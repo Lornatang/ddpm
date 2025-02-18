@@ -134,6 +134,68 @@ class UNet(Module):
         self.final_res_block = residual_block(init_dim * 2, init_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
 
+    def forward(self, x: torch.Tensor, sample_time: torch.Tensor, self_conditioning_tensor: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass for the UNet module.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            sample_time (torch.Tensor): Time embedding tensor.
+            self_conditioning_tensor (Optional[torch.Tensor], optional): Self-conditioning tensor. Defaults to None.
+
+        Returns:
+            torch.Tensor: Output tensor after passing through the UNet.
+        """
+        # Ensure input dimensions are divisible by the downsample factor
+        assert all(
+            [
+                (dimension % self.downsample_factor) == 0 for dimension in x.shape[-2:]
+            ]
+        ), f"your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet"
+
+        # Handle self-conditioning
+        if self.self_condition:
+            self_conditioning_tensor = torch.zeros_like(x) if self_conditioning_tensor is None else self_conditioning_tensor
+            x = torch.cat((self_conditioning_tensor, x), dim=1)
+
+        # Initial convolution
+        x = self.init_conv(x)
+        residual = x.clone()
+
+        # Time embedding
+        time_embedding = self.time_mlp(sample_time)
+
+        hidden_states = []
+
+        # Downsampling path
+        for block1, block2, attention, downsample in self.downs:
+            x = block1(x, time_embedding)
+            hidden_states.append(x)
+            x = block2(x, time_embedding)
+            x = attention(x) + x
+            hidden_states.append(x)
+            x = downsample(x)
+
+        # Middle block
+        x = self.mid_block1(x, time_embedding)
+        x = self.mid_attn(x) + x
+        x = self.mid_block2(x, time_embedding)
+
+        # Upsampling path
+        for block1, block2, attention, upsample in self.ups:
+            x = torch.cat((x, hidden_states.pop()), 1)
+            x = block1(x, time_embedding)
+            x = torch.cat((x, hidden_states.pop()), 1)
+            x = block2(x, time_embedding)
+            x = attention(x) + x
+            x = upsample(x)
+
+        # Final block
+        x = torch.cat((x, residual), 1)
+        x = self.final_res_block(x, time_embedding)
+        x = self.final_conv(x)
+
+        return x
+
     @property
     def downsample_factor(self) -> int:
         """Returns the downsample factor of the UNet.
@@ -142,60 +204,3 @@ class UNet(Module):
             int: Downsample factor.
         """
         return 2 ** (len(self.downs) - 1)
-
-    def forward(self, x: torch.Tensor, time: torch.Tensor, x_self_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Forward pass for the UNet module.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-            time (torch.Tensor): Time embedding tensor.
-            x_self_cond (Optional[torch.Tensor], optional): Self-conditioning tensor. Defaults to None.
-
-        Returns:
-            torch.Tensor: Output tensor after passing through the UNet.
-        """
-        assert all(
-            [
-                (d % self.downsample_factor) == 0 for d in x.shape[-2:]
-            ]
-        ), f"your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet"
-
-        if self.self_condition:
-            x_self_cond = torch.zeros_like(x) if x_self_cond is None else x_self_cond
-            x = torch.cat((x_self_cond, x), dim=1)
-
-        x = self.init_conv(x)
-        r = x.clone()
-
-        t = self.time_mlp(time)
-
-        h = []
-
-        for block1, block2, attn, downsample in self.downs:
-            x = block1(x, t)
-            h.append(x)
-
-            x = block2(x, t)
-            x = attn(x) + x
-            h.append(x)
-
-            x = downsample(x)
-
-        x = self.mid_block1(x, t)
-        x = self.mid_attn(x) + x
-        x = self.mid_block2(x, t)
-
-        for block1, block2, attn, upsample in self.ups:
-            x = torch.cat((x, h.pop()), dim=1)
-            x = block1(x, t)
-
-            x = torch.cat((x, h.pop()), dim=1)
-            x = block2(x, t)
-            x = attn(x) + x
-
-            x = upsample(x)
-
-        x = torch.cat((x, r), dim=1)
-
-        x = self.final_res_block(x, t)
-        return self.final_conv(x)
