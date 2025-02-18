@@ -67,7 +67,10 @@ class Trainer:
         self.inception_block_index = inception_block_index
         self.save_and_sample_every = save_and_sample_every
         self.save_dir = Path(save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.save_samples_dir = self.save_dir.joinpath("samples")
+        self.save_weights_dir = self.save_dir.joinpath("weights")
+        self.save_samples_dir.mkdir(parents=True, exist_ok=True)
+        self.save_weights_dir.mkdir(parents=True, exist_ok=True)
         self.device = select_device(device, self.batch_size)
 
         # Model
@@ -166,7 +169,7 @@ class Trainer:
                         all_images_list = list(map(lambda num_images: self.ema.ema.sample(batch_size=num_images), batches))
 
                     all_images = torch.cat(all_images_list, dim=0)
-                    vutils.save_image(all_images, Path(self.save_dir, "samples", f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
+                    vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
 
                     # whether to calculate fid
                     # if self.calculate_fid:

@@ -12,7 +12,6 @@ trainer = Trainer(
     gradient_accumulate_every=2,
     lr=8e-5,
     num_steps=700000,
-    save_and_sample_every=10,
     save_dir="./results/train/cifar10",
     device="0",
 )
