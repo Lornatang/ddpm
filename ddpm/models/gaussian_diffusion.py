@@ -306,7 +306,7 @@ class GaussianDiffusion(nn.Module):
         # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
         # Unnormalize the output
-        out = self.unnormalize(out)
+        out = (out + 1) * 0.5
 
         return out
 

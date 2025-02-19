@@ -35,7 +35,7 @@ class Trainer:
             num_samples: int = 25,
             max_grad_norm: float = 1.0,
             num_fid_samples: int = 50000,
-            fid_stat_path: Union[Path, str] = "./datasets/cifar10/fid_stat.npz",
+            fid_stat_path: Union[Path, str] = "./datasets/fid_stat.npz",
             save_and_sample_every: int = 1000,
             save_dir: Union[Path, str] = "./results",
             device: str = "0",
@@ -51,7 +51,7 @@ class Trainer:
             betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.99).
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
             num_samples (int, optional): Number of samples to generate. Defaults to 25.
-            fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/cifar10/fid_stat.npz``.
+            fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/fid_stat.npz``.
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.

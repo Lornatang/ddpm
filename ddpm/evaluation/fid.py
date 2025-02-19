@@ -82,7 +82,7 @@ class FIDMetrics:
         except OSError:
             num_batches = int(math.ceil(self.num_samples / self.batch_size))
             stacked_real_features = []
-            LOGGER.info(f"Stacking Inception features for {self.num_samples} samples from the real dataset.\n")
+            LOGGER.info(f"Stacking Inception features for {self.num_samples} samples from the real dataset.")
             for _ in tqdm(range(num_batches)):
                 try:
                     real_samples = next(self.data_loader)
