@@ -264,7 +264,7 @@ class GaussianDiffusion(nn.Module):
         time_pairs = list(zip(time_step[:-1], time_step[1:]))
 
         # Initialize the image with random noise
-        image = torch.randn(shape, device=self.device)
+        image = torch.randn(shape, device=self.betas.device)
         images = [image]
 
         # Initialize x_start to None
@@ -273,7 +273,7 @@ class GaussianDiffusion(nn.Module):
         # Sampling loop over all time pairs
         for current_time, next_time in tqdm(time_pairs, desc="Sampling loop time step"):
             # Create a tensor with the current time step for all samples
-            time_cond = torch.full((shape[0],), current_time, device=self.device, dtype=torch.long)
+            time_cond = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
             # Conditional input for self-conditioning
             self_cond = x_start if self.self_condition else None
 
