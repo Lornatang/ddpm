@@ -17,7 +17,6 @@ from ddpm.data.utils import cycle_data_loader
 from ddpm.evaluation.fid import FIDMetrics
 from ddpm.utils.checkpoint import convert_optimizer_state_dict_to_half
 from ddpm.utils.ema import ModelEMA
-from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
 from ddpm.utils.torch_utils import select_device
 
@@ -88,6 +87,7 @@ class Trainer:
         transform = transforms.Compose([
             transforms.Resize(self.diffusion_model.image_size),
             transforms.CenterCrop(self.diffusion_model.image_size),
+            transforms.RandomHorizontalFlip(),
             transforms.ToTensor()
         ])
         self.dataset = BaseImageFolder(root, transform)
@@ -177,13 +177,12 @@ class Trainer:
 
                     # Cal fid and save model
                     fid_score = self.fid_scorer.fid_score()
-                    LOGGER.info(f"FID score: {fid_score:.2f}")
+                    print(f"FID score: {fid_score:.2f}")
 
                     if self.best_fid > fid_score:
                         self.best_fid = fid_score
-                        self.save("best")
-                    else:
                         self.save(str(self.step))
+                        self.save("best")
                     self.save("last")
 
                 pbar.update(1)
