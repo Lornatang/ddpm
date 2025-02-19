@@ -27,19 +27,20 @@ class GaussianDiffusion(nn.Module):
             image_size: Union[int, Tuple[int, int]],
             time_steps: int = 1000,
             sampling_time_steps: int = 250,
+            ddim_sampling_eta: float = 0.,
             offset_noise_strength: float = 0.,
             min_snr_loss_weight: bool = False,
             min_snr_gamma: int = 5,
             immiscible: bool = False
-    ):
-        """
-        Initializes the GaussianDiffusion model.
+    ) -> None:
+        """Initializes the GaussianDiffusion model.
 
         Args:
             model (Any): The neural network model used for diffusion.
             image_size (Union[int, Tuple[int, int]]): The size of the input images.
             time_steps (int, optional): The number of time steps for the diffusion process. Defaults to 1000.
             sampling_time_steps (int, optional): The number of time steps for sampling. Defaults to 250.
+            ddim_sampling_eta (float, optional): The eta value for ddim sampling. Defaults to 0.
             offset_noise_strength (float, optional): The strength of the offset noise. Defaults to 0.
             min_snr_loss_weight (bool, optional): Whether to use minimum SNR loss weight. Defaults to False.
             min_snr_gamma (int, optional): The gamma value for minimum SNR. Defaults to 5.
@@ -71,6 +72,8 @@ class GaussianDiffusion(nn.Module):
         # Sampling related parameters
         self.sampling_time_steps = time_steps if sampling_time_steps is None else sampling_time_steps
         assert self.sampling_time_steps <= time_steps, "sampling time steps must be less than or equal to total time steps"
+        self.is_ddim_sampling = self.sampling_time_steps < time_steps
+        self.ddim_sampling_eta = ddim_sampling_eta
 
         # Helper function to register buffer from float64 to float32
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
@@ -232,6 +235,44 @@ class GaussianDiffusion(nn.Module):
 
         return out
 
+    @torch.inference_mode()
+    def ddim_sample(self, shape: Tuple[int, ...], return_all_time_steps: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        time_step = torch.linspace(-1, self.num_time_steps - 1, steps=self.sampling_time_steps + 1)
+        time_step = list(reversed(time_step.int().tolist()))
+        time_pairs = list(zip(time_step[:-1], time_step[1:]))
+
+        image = torch.randn(shape, device=self.device)
+        images = [image]
+
+        x_start = None
+
+        for current_time, next_time in tqdm(time_pairs, desc="Sampling loop time step"):
+            time_cond = torch.full((shape[0],), current_time, device=self.device, dtype=torch.long)
+            self_cond = x_start if self.self_condition else None
+            pred_noise, x_start, *_ = self.model_predictions(image, time_cond, self_cond, clip_x_start=True)
+
+            if next_time < 0:
+                image = x_start
+                images.append(image)
+                continue
+
+            alpha = self.alphas_cumprod[current_time]
+            alpha_next = self.alphas_cumprod[next_time]
+
+            sigma = self.ddim_sampling_eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+            c = (1 - alpha_next - sigma ** 2).sqrt()
+
+            noise = torch.randn_like(image)
+
+            image = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+
+            images.append(image)
+
+        out = image if not return_all_time_steps else torch.stack(images, dim=1)
+        out = self.unnormalize(out)
+
+        return out
+
     def sample(self, batch_size: int = 16, return_all_time_steps: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
         """Generate samples from the Gaussian diffusion process.
 
@@ -243,7 +284,8 @@ class GaussianDiffusion(nn.Module):
             Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
         """
         (height, width), channels = self.image_size, self.in_channels
-        sample = self.p_sample_loop((batch_size, channels, height, width), return_all_time_steps)
+        sample_func = self.ddim_sample if self.is_ddim_sampling else self.p_sample_loop
+        sample = sample_func((batch_size, channels, height, width), return_all_time_steps)
 
         return sample
 

@@ -82,7 +82,7 @@ class FIDMetrics:
         except OSError:
             num_batches = int(math.ceil(self.num_samples / self.batch_size))
             stacked_real_features = []
-            LOGGER.info(f"Stacking Inception features for {self.num_samples} samples from the real dataset.")
+            LOGGER.info(f"Stacking Inception features for {self.num_samples} samples from the real dataset.\n")
             for _ in tqdm(range(num_batches)):
                 try:
                     real_samples = next(self.data_loader)
@@ -94,6 +94,7 @@ class FIDMetrics:
             stacked_real_features = (torch.cat(stacked_real_features, dim=0).cpu().numpy())
             m2 = np.mean(stacked_real_features, axis=0)
             s2 = np.cov(stacked_real_features, rowvar=False)
+            Path(self.dataset_stat_path).parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(str(self.dataset_stat_path), m2=m2, s2=s2)
             LOGGER.info(f"Dataset stats cached to {self.dataset_stat_path} for future use.")
             self.m2, self.s2 = m2, s2
