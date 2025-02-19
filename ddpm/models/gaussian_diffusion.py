@@ -221,54 +221,91 @@ class GaussianDiffusion(nn.Module):
         Returns:
             Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
         """
+        # Initialize the image with random noise
         image = torch.randn(shape, device=self.betas.device)
         images = [image]
 
+        # Initialize x_start to None
         x_start = None
+
+        # Sampling loop over all time steps in reverse order
         for time_step in tqdm(reversed(range(0, self.num_time_steps)), desc="sampling loop time step", total=self.num_time_steps):
+            # Conditional input for self-conditioning
             self_cond = x_start if self.self_condition else None
+
+            # Perform a single step of sampling
             image, x_start = self.p_sample(image, time_step, self_cond)
+
+            # Append the current image to the list of images
             images.append(image)
 
+        # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
+        # Normalize the output to the range [0, 1]
         out = (out + 1.) * 0.5
 
         return out
 
     @torch.inference_mode()
     def ddim_sample(self, shape: Tuple[int, ...], return_all_time_steps: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        """
+        Perform the sampling loop using the Denoising Diffusion Implicit Model (DDIM) algorithm.
+
+        Args:
+            shape (Tuple[int, ...]): The shape of the tensor to be sampled.
+            return_all_time_steps (bool, optional): Whether to return the samples from all time steps. Defaults to False.
+
+        Returns:
+            Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
+        """
+        # Define the time steps for DDIM sampling
         time_step = torch.linspace(-1, self.num_time_steps - 1, steps=self.sampling_time_steps + 1)
         time_step = list(reversed(time_step.int().tolist()))
         time_pairs = list(zip(time_step[:-1], time_step[1:]))
 
+        # Initialize the image with random noise
         image = torch.randn(shape, device=self.device)
         images = [image]
 
+        # Initialize x_start to None
         x_start = None
 
+        # Sampling loop over all time pairs
         for current_time, next_time in tqdm(time_pairs, desc="Sampling loop time step"):
+            # Create a tensor with the current time step for all samples
             time_cond = torch.full((shape[0],), current_time, device=self.device, dtype=torch.long)
+            # Conditional input for self-conditioning
             self_cond = x_start if self.self_condition else None
+
+            # Predict the noise and reconstruct x_start
             pred_noise, x_start, *_ = self.model_predictions(image, time_cond, self_cond, clip_x_start=True)
 
+            # If the next time step is the final step, set the image to x_start
             if next_time < 0:
                 image = x_start
                 images.append(image)
                 continue
 
+            # Calculate the alpha values for the current and next time steps
             alpha = self.alphas_cumprod[current_time]
             alpha_next = self.alphas_cumprod[next_time]
 
+            # Calculate the sigma value for DDIM sampling
             sigma = self.ddim_sampling_eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
             c = (1 - alpha_next - sigma ** 2).sqrt()
 
+            # Generate random noise
             noise = torch.randn_like(image)
 
+            # Update the image using the DDIM sampling formula
             image = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
+            # Append the current image to the list of images
             images.append(image)
 
+        # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
+        # Unnormalize the output
         out = self.unnormalize(out)
 
         return out
