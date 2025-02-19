@@ -9,13 +9,17 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from tqdm.auto import tqdm
 from torchvision import utils as vutils
+from tqdm.auto import tqdm
+
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
+from ddpm.evaluation.fid import FIDMetrics
+from ddpm.utils.checkpoint import convert_optimizer_state_dict_to_half
 from ddpm.utils.ema import ModelEMA
-from ddpm.utils.torch_utils import select_device
+from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
+from ddpm.utils.torch_utils import select_device
 
 
 class Trainer:
@@ -31,7 +35,7 @@ class Trainer:
             num_samples: int = 25,
             max_grad_norm: float = 1.0,
             num_fid_samples: int = 50000,
-            inception_block_index: int = 2048,
+            fid_stat_path: Union[Path, str] = "./datasets/cifar10/fid_stat.npz",
             save_and_sample_every: int = 1000,
             save_dir: Union[Path, str] = "./results",
             device: str = "0",
@@ -47,9 +51,9 @@ class Trainer:
             betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.99).
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
             num_samples (int, optional): Number of samples to generate. Defaults to 25.
+            fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/cifar10/fid_stat.npz``.
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
-            inception_block_index (int, optional): Inception block index for FID evaluation. Defaults to 2048.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.
             save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results".
         """
@@ -64,7 +68,7 @@ class Trainer:
         self.num_samples = num_samples
         self.max_grad_norm = max_grad_norm
         self.num_fid_samples = num_fid_samples
-        self.inception_block_index = inception_block_index
+        self.fid_stat_path = fid_stat_path
         self.save_and_sample_every = save_and_sample_every
         self.save_dir = Path(save_dir)
         self.save_samples_dir = self.save_dir.joinpath("samples")
@@ -100,18 +104,15 @@ class Trainer:
         self.step = 0
 
         # FID-score computation
-        # self.best_fid = 1e10
-        # self.fid_scorer = FIDEvaluation(
-        #     batch_size=self.batch_size,
-        #     dl=self.data_loader,
-        #     sampler=self.ema.ema_model,
-        #     channels=self.in_channels,
-        #     accelerator=self.accelerator,
-        #     stats_dir=save_dir,
-        #     device=self.device,
-        #     num_fid_samples=num_fid_samples,
-        #     inception_block_idx=inception_block_index
-        # )
+        self.best_fid = 1e10
+        self.fid_scorer = FIDMetrics(
+            self.data_loader,
+            self.batch_size,
+            self.ema.ema,
+            dataset_stat_path=self.fid_stat_path,
+            num_samples=self.num_fid_samples,
+            device=self.device,
+        )
 
     def optimizer_step(self) -> None:
         """Perform a single step of the training optimizer with gradient clipping and EMA update."""
@@ -132,10 +133,13 @@ class Trainer:
         """
         ckpt = {
             "step": self.step,
-            "model": self.diffusion_model.state_dict(),
+            "best_fid": self.best_fid,
+            "model": None,  # resume and final checkpoints derive from EMA
             "ema": deepcopy(self.ema.ema).half(),
+            "updates": self.ema.updates,
+            "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
         }
-        torch.save(ckpt, str(self.save_dir.joinpath(f"{milestone}.pkl")))
+        torch.save(ckpt, str(self.save_weights_dir.joinpath(f"{milestone}.pkl")))
 
     def train(self):
         with tqdm(initial=self.step, total=self.num_steps) as pbar:
@@ -171,16 +175,15 @@ class Trainer:
                     all_images = torch.cat(all_images_list, dim=0)
                     vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
 
-                    # whether to calculate fid
-                    # if self.calculate_fid:
-                    #     fid_score = self.fid_scorer.fid_score()
-                    #     accelerator.print(f"fid_score: {fid_score}")
+                    # Cal fid and save model
+                    fid_score = self.fid_scorer.fid_score()
+                    LOGGER.info(f"FID score: {fid_score:.2f}")
 
-                    # if self.best_fid > fid_score:
-                    #     self.best_fid = fid_score
-                    #     self.save("best")
-                    #     self.save("latest")
-                    # else:
-                    #     self.save(milestone)
+                    if self.best_fid > fid_score:
+                        self.best_fid = fid_score
+                        self.save("best")
+                    else:
+                        self.save(str(self.step))
+                    self.save("last")
 
                 pbar.update(1)

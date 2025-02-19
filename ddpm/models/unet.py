@@ -82,8 +82,8 @@ class UNet(nn.Module):
         residual_block = partial(Residual, time_embedding_dim=time_embedding_dim, dropout=dropout)
 
         # layers
-        self.downs = nn.ModuleList([])
-        self.ups = nn.ModuleList([])
+        self.down_sampling = nn.ModuleList([])
+        self.up_sampling = nn.ModuleList([])
         num_resolutions = len(out_channel_list)
 
         for i, (
@@ -101,7 +101,7 @@ class UNet(nn.Module):
         ):
             is_last = i >= (num_resolutions - 1)
             attn_klass = attention_block if layer_full_attn else LinearAttention
-            self.downs.append(nn.ModuleList([
+            self.down_sampling.append(nn.ModuleList([
                 residual_block(in_dim, in_dim),
                 residual_block(in_dim, in_dim),
                 attn_klass(in_dim, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
@@ -121,7 +121,7 @@ class UNet(nn.Module):
         ) in enumerate(zip(*map(reversed, (out_channel_list, full_attn, attn_heads, attn_dim_head)))):
             is_last = i == (len(out_channel_list) - 1)
             attn_klass = attention_block if layer_full_attn else LinearAttention
-            self.ups.append(nn.ModuleList([
+            self.up_sampling.append(nn.ModuleList([
                 residual_block(out_dim + in_dim, out_dim),
                 residual_block(out_dim + in_dim, out_dim),
                 attn_klass(out_dim, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
@@ -167,7 +167,7 @@ class UNet(nn.Module):
         hidden_states = []
 
         # Downsampling path
-        for block1, block2, attention, downsample in self.downs:
+        for block1, block2, attention, downsample in self.down_sampling:
             x = block1(x, time_embedding)
             hidden_states.append(x)
             x = block2(x, time_embedding)
@@ -181,7 +181,7 @@ class UNet(nn.Module):
         x = self.mid_block2(x, time_embedding)
 
         # Upsampling path
-        for block1, block2, attention, upsample in self.ups:
+        for block1, block2, attention, upsample in self.up_sampling:
             x = torch.cat((x, hidden_states.pop()), dim=1)
             x = block1(x, time_embedding)
             x = torch.cat((x, hidden_states.pop()), dim=1)
@@ -203,4 +203,4 @@ class UNet(nn.Module):
         Returns:
             int: Downsample factor.
         """
-        return 2 ** (len(self.downs) - 1)
+        return 2 ** (len(self.down_sampling) - 1)
