@@ -91,7 +91,7 @@ class Trainer:
             transforms.ToTensor()
         ])
         self.dataset = BaseImageFolder(root, transform)
-        data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, persistent_workers=True)
+        data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, drop_last=True, persistent_workers=True)
         self.data_loader = cycle_data_loader(data_loader)
 
         # optimizer
