@@ -11,7 +11,7 @@ from pytorch_fid.inception import InceptionV3
 from torch import nn
 from torch.nn import functional as F_torch
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
@@ -83,7 +83,7 @@ class FIDMetrics:
             num_batches = int(math.ceil(self.num_samples / self.batch_size))
             stacked_real_features = []
             LOGGER.info(f"Stacking Inception features for {self.num_samples} samples from the real dataset.")
-            for _ in tqdm(range(num_batches)):
+            for _ in tqdm(range(num_batches), desc="Stacking inception features"):
                 try:
                     real_samples = next(self.data_loader)
                 except StopIteration:
@@ -112,11 +112,11 @@ class FIDMetrics:
             self.load_dataset_stat()
 
         self.sampler.eval()
-        batches = num_to_groups(self.num_samples, self.batch_size)
+        batch_size_list = num_to_groups(self.num_samples, self.batch_size)
         stacked_fake_features = []
         LOGGER.info(f"Stacking Inception features for {self.num_samples} generated samples.")
-        for batch in tqdm(batches):
-            fake_samples = self.sampler.sample(batch_size=batch)
+        for batch_size in tqdm(batch_size_list, desc="Calculate fid score"):
+            fake_samples = self.sampler.sample(batch_size=batch_size)
             fake_features = self.calculate_inception_features(fake_samples)
             stacked_fake_features.append(fake_features)
 

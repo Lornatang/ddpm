@@ -17,6 +17,7 @@ from ddpm.data.utils import cycle_data_loader
 from ddpm.evaluation.fid import FIDMetrics
 from ddpm.utils.checkpoint import convert_optimizer_state_dict_to_half
 from ddpm.utils.ema import ModelEMA
+from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
 from ddpm.utils.torch_utils import select_device
 
@@ -142,7 +143,7 @@ class Trainer:
         torch.save(ckpt, str(self.save_weights_dir.joinpath(f"{milestone}.pkl")))
 
     def train(self):
-        with tqdm(initial=self.step, total=self.num_steps) as pbar:
+        with tqdm(total=self.num_steps, desc="Train loop", initial=self.step, ) as pbar:
             while self.step < self.num_steps:
                 self.diffusion_model.train()
 
@@ -177,7 +178,7 @@ class Trainer:
 
                     # Cal fid and save model
                     fid_score = self.fid_scorer.fid_score()
-                    print(f"FID score: {fid_score:.2f}")
+                    LOGGER.info(f"FID score: {fid_score:.2f}")
 
                     if self.best_fid > fid_score:
                         self.best_fid = fid_score
