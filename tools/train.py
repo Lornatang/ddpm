@@ -1,6 +1,7 @@
 # Copyright (c) Lornatang. All rights reserved.
-from ddpm.models import UNet, GaussianDiffusion
 from ddpm.engine.trainer import Trainer
+from ddpm.models.gaussian_diffusion import GaussianDiffusion
+from ddpm.models.unet import UNet
 
 model = UNet(128, channels_multipliers=(1, 2, 2, 2), dropout=0.1)
 diffusion_model = GaussianDiffusion(model, 32, 1000, sampling_time_steps=250)
