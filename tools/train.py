@@ -2,7 +2,7 @@
 from ddpm.models import UNet, GaussianDiffusion
 from ddpm.engine.trainer import Trainer
 
-model = UNet(64, channels_multipliers=(1, 2, 2, 2), dropout=0.1)
+model = UNet(128, channels_multipliers=(1, 2, 2, 2), dropout=0.1)
 diffusion_model = GaussianDiffusion(model, 32, 1000, sampling_time_steps=250)
 
 trainer = Trainer(
@@ -17,7 +17,7 @@ trainer = Trainer(
     num_fid_samples=50000,
     fid_stat_path="./datasets/stats/cifar10_train.npz",
     save_and_sample_every=10000,
-    save_dir="./results/train/cifar10",
+    save_dir="./results/train/new_cifar10",
     device="0",
 )
 
