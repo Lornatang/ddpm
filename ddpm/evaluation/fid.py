@@ -75,10 +75,10 @@ class FIDMetrics:
     def load_dataset_stat(self) -> None:
         """Load or calculate dataset statistics (mean and covariance of Inception features)."""
         try:
-            ckpt = np.load(str(self.dataset_stat_path))
-            self.m2, self.s2 = ckpt["m2"], ckpt["s2"]
+            dataset_stat = np.load(str(self.dataset_stat_path))
+            self.m2, self.s2 = dataset_stat["m2"], dataset_stat["s2"]
             LOGGER.info(f"Dataset stats loaded from {self.dataset_stat_path}")
-            ckpt.close()
+            dataset_stat.close()
         except OSError:
             num_batches = int(math.ceil(self.num_samples / self.batch_size))
             stacked_real_features = []
@@ -115,7 +115,8 @@ class FIDMetrics:
         batch_size_list = num_to_groups(self.num_samples, self.batch_size)
         stacked_fake_features = []
         LOGGER.info(f"Stacking Inception features for {self.num_samples} generated samples.")
-        for batch_size in tqdm(batch_size_list, desc="Calculate fid score"):
+        LOGGER.info(f"Calculate fid score...")
+        for batch_size in batch_size_list:
             fake_samples = self.sampler.sample(batch_size=batch_size)
             fake_features = self.calculate_inception_features(fake_samples)
             stacked_fake_features.append(fake_features)

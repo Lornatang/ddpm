@@ -32,6 +32,7 @@ classifiers = [
 # Required dependencies
 dependencies = [
     "einops",
+    "pytorch_fid",
     "torch>=2.6.0",
     "torchvision>=0.21.0",
 ]

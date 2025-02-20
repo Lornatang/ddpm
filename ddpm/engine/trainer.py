@@ -32,7 +32,7 @@ class Trainer:
             lr: float = 1e-4,
             betas: Tuple[float, float] = (0.9, 0.99),
             num_steps: int = 100000,
-            num_samples: int = 25,
+            num_samples: int = 16,
             max_grad_norm: float = 1.0,
             num_fid_samples: int = 50000,
             fid_stat_path: Union[Path, str] = "./datasets/fid_stat.npz",
@@ -50,7 +50,7 @@ class Trainer:
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
             betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.99).
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
-            num_samples (int, optional): Number of samples to generate. Defaults to 25.
+            num_samples (int, optional): Number of samples to generate. Defaults to 16.
             fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/fid_stat.npz``.
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
@@ -81,8 +81,7 @@ class Trainer:
         self.diffusion_model = diffusion_model.to(self.device)
 
         # AMP
-        self.amp = torch.tensor(True).to(self.device)
-        self.scaler = torch.amp.GradScaler("cuda", enabled=bool(self.amp))
+        self.scaler = torch.amp.GradScaler("cuda", enabled=True)
 
         # dataset and dataloader
         transform = transforms.Compose([
@@ -143,7 +142,7 @@ class Trainer:
         torch.save(ckpt, str(self.save_weights_dir.joinpath(f"{milestone}.pkl")))
 
     def train(self):
-        with tqdm(total=self.num_steps, desc="Train loop", initial=self.step, ) as pbar:
+        with tqdm(total=self.num_steps, initial=self.step) as pbar:
             while self.step < self.num_steps:
                 self.diffusion_model.train()
 
@@ -152,7 +151,7 @@ class Trainer:
                     data = next(self.data_loader).to(self.device)
 
                     # Forward
-                    with torch.amp.autocast("cuda", enabled=bool(self.amp)):
+                    with torch.amp.autocast("cuda", enabled=True):
                         loss = self.diffusion_model(data)
                         loss /= self.gradient_accumulate_every
                         total_loss += loss.item()
