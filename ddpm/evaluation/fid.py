@@ -1,6 +1,6 @@
 # Copyright (c) Lornatang. All rights reserved.
 from pathlib import Path
-from typing import Union
+from typing import Tuple, Union
 
 import math
 import numpy as np
@@ -19,6 +19,7 @@ from ddpm.utils.ops import num_to_groups
 __all__ = [
     "FIDMetrics",
 ]
+
 
 class FIDMetrics:
     def __init__(
@@ -72,6 +73,20 @@ class FIDMetrics:
 
         return features
 
+    def calculate_inception_logits(self, samples: torch.Tensor) -> torch.Tensor:
+        """Calculate Inception logits for given samples.
+
+        Args:
+            samples (torch.Tensor): Input samples (images).
+
+        Returns:
+            torch.Tensor: Extracted logits (raw class scores).
+        """
+        self.inception_v3.eval()
+        logits = self.inception_v3(samples)[0]
+
+        return logits
+
     def load_dataset_stat(self) -> None:
         """Load or calculate dataset statistics (mean and covariance of Inception features)."""
         try:
@@ -82,7 +97,6 @@ class FIDMetrics:
         except OSError:
             num_batches = int(math.ceil(self.num_samples / self.batch_size))
             stacked_real_features = []
-            LOGGER.info(f"Stacking Inception features for {self.num_samples} samples from the real dataset.")
             for _ in tqdm(range(num_batches), desc="Stacking inception features"):
                 try:
                     real_samples = next(self.data_loader)
@@ -102,27 +116,42 @@ class FIDMetrics:
         self.dataset_stat_loaded = True
 
     @torch.inference_mode()
-    def fid_score(self) -> float:
-        """Calculate the FID score between generated samples and the real dataset.
+    def calculate(self) -> Tuple[float, float]:
+        """Calculate Inception score and FID score.
 
         Returns:
-            float: FID score.
+            Tuple[float, float]: Inception score, FID score.
         """
         if not self.dataset_stat_loaded:
             self.load_dataset_stat()
 
         self.sampler.eval()
         batch_size_list = num_to_groups(self.num_samples, self.batch_size)
+        stacked_fake_logits = []
         stacked_fake_features = []
-        LOGGER.info(f"Stacking Inception features for {self.num_samples} generated samples.")
-        LOGGER.info(f"Calculate fid score...")
+        LOGGER.info(f"Calculate metrics...")
         for batch_size in batch_size_list:
             fake_samples = self.sampler.sample(batch_size=batch_size)
+            fake_logits = self.calculate_inception_logits(fake_samples)
             fake_features = self.calculate_inception_features(fake_samples)
+            stacked_fake_logits.append(fake_logits)
             stacked_fake_features.append(fake_features)
 
+        # Calculate Inception Score
+        stacked_fake_logits = torch.cat(stacked_fake_logits, dim=0).cpu().numpy()
+        # Calculate the probabilities
+        p_y = np.exp(stacked_fake_logits)  # Convert logits to probabilities
+        p_y /= p_y.sum(axis=1, keepdims=True)  # Normalize to get the probability distribution
+        # Compute the marginal p(y)
+        p_y_mean = np.mean(p_y, axis=0)
+        # Calculate the Inception Score using the formula
+        kl_divergence = p_y * (np.log(p_y + 1e-16) - np.log(p_y_mean + 1e-16))
+        inception_score = np.exp(np.mean(np.sum(kl_divergence, axis=1)))
+
+        # Calculate FID Score
         stacked_fake_features = torch.cat(stacked_fake_features, dim=0).cpu().numpy()
         m1 = np.mean(stacked_fake_features, axis=0)
         s1 = np.cov(stacked_fake_features, rowvar=False)
+        fid_score = calculate_frechet_distance(m1, s1, self.m2, self.s2)
 
-        return calculate_frechet_distance(m1, s1, self.m2, self.s2)
+        return inception_score, fid_score

@@ -83,7 +83,7 @@ class Trainer:
         # AMP
         self.scaler = torch.amp.GradScaler("cuda", enabled=True)
 
-        # dataset and dataloader
+        # Dataset and dataloader
         transform = transforms.Compose([
             transforms.Resize(self.diffusion_model.image_size),
             transforms.CenterCrop(self.diffusion_model.image_size),
@@ -94,16 +94,17 @@ class Trainer:
         data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, drop_last=True, persistent_workers=True)
         self.data_loader = cycle_data_loader(data_loader)
 
-        # optimizer
+        # Optimizer
         self.optimizer = Adam(self.diffusion_model.parameters(), lr, betas)
 
-        # ema
+        # Ema
         self.ema = ModelEMA(self.diffusion_model)
 
-        # step counter state
+        # Step counter state
         self.step = 0
 
-        # FID-score computation
+        # Metric computation
+        self.best_is = 0
         self.best_fid = 1e10
         self.fid_scorer = FIDMetrics(
             self.data_loader,
@@ -175,14 +176,19 @@ class Trainer:
                     all_images = torch.cat(all_images_list, dim=0)
                     vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
 
-                    # Cal fid and save model
-                    fid_score = self.fid_scorer.fid_score()
-                    LOGGER.info(f"FID score: {fid_score:.2f}")
+                    # Calculate Inception Score and FID
+                    inception_score, fid_score = self.fid_scorer.calculate()
+                    LOGGER.info(f"Inception score: {inception_score:.2f}, FID score: {fid_score:.2f}")
 
                     if self.best_fid > fid_score:
                         self.best_fid = fid_score
-                        self.save(str(self.step))
-                        self.save("best")
+                        self.save("best_fid")
+
+                    if self.best_is < inception_score:
+                        self.best_is = inception_score
+                        self.save("best_is")
+
+                    self.save(str(self.step))
                     self.save("last")
 
                 pbar.update(1)
