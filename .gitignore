@@ -33,5 +33,6 @@ model_ts*.txt
 _darcs
 
 # project dirs
+*.sh
 datasets/*
 results/*
