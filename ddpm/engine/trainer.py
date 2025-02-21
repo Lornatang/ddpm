@@ -29,7 +29,7 @@ class Trainer:
             diffusion_model: torch.nn.Module,
             root: Union[Path, str],
             augment: bool = False,
-            batch_size: int = 16,
+            batch_size: int = 128,
             gradient_accumulate_every: int = 1,
             lr: float = 1e-4,
             betas: Tuple[float, float] = (0.9, 0.99),
@@ -48,7 +48,7 @@ class Trainer:
             diffusion_model (torch.nn.Module): The diffusion model to be trained.
             root (Union[Path, str]): The root directory for the dataset.
             augment (bool, optional): Whether to apply data augmentation. Defaults to False.
-            batch_size (int, optional): The batch size for training. Defaults to 16.
+            batch_size (int, optional): The batch size for training. Defaults to 128.
             gradient_accumulate_every (int, optional): Number of gradient accumulation steps. Defaults to 1.
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
             betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.99).

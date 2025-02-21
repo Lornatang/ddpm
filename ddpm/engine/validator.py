@@ -1,6 +1,6 @@
 # Copyright (c) Lornatang. All rights reserved.
 from pathlib import Path
-from typing import Union, Tuple
+from typing import Tuple, Union
 
 import torch
 from torch.utils.data import DataLoader
@@ -11,6 +11,11 @@ from ddpm.data.utils import cycle_data_loader
 from ddpm.evaluation.fid import FIDMetrics
 from ddpm.utils.events import LOGGER
 from ddpm.utils.torch_utils import select_device
+from torchvision import utils as vutils
+
+__all__ = [
+    "Validator",
+]
 
 
 class Validator:
@@ -18,13 +23,25 @@ class Validator:
             self,
             model_weights_path: Union[Path, str],
             root: Union[Path, str],
-            batch_size: int = 16,
-            num_samples: int = 16,
+            batch_size: int = 128,
+            num_samples: int = 8,
             num_fid_samples: int = 50000,
-            fid_stat_path: Union[Path, str] = "./datasets/stats/train.npz",
+            fid_stat_path: Union[Path, str] = "./datasets/stats/val.npz",
             save_dir: Union[Path, str] = "./results/val",
             device: str = "0",
     ) -> None:
+        """Initializes the Validator class for model evaluation.
+
+        Args:
+            model_weights_path (Union[Path, str]): Path to the pre-trained model weights.
+            root (Union[Path, str]): Root directory containing the dataset.
+            batch_size (int, optional): Batch size for validation. Defaults to 128.
+            num_samples (int, optional): Number of samples to generate for evaluation. Defaults to 8.
+            num_fid_samples (int, optional): Number of samples to use for FID calculation. Defaults to 50000.
+            fid_stat_path (Union[Path, str], optional): Path to the FID statistics. Defaults to './datasets/stats/train.npz'.
+            save_dir (Union[Path, str], optional): Directory to save the validation results. Defaults to './results/val'.
+            device (str, optional): The device to use for computation. Defaults to '0' (CUDA).
+        """
         self.model_weights_path = model_weights_path
         self.root = root
         self.batch_size = batch_size
@@ -38,9 +55,7 @@ class Validator:
         # Model
         checkpoint = torch.load(self.model_weights_path, weights_only=False)
         self.model = checkpoint["ema"] if "ema" in checkpoint else checkpoint["model"]
-
-        # AMP
-        self.scaler = torch.amp.GradScaler("cuda", enabled=True)
+        self.model.float()
 
         # Dataset and dataloader
         transform = transforms.Compose([
@@ -63,7 +78,21 @@ class Validator:
         )
 
     def validate(self) -> Tuple[float, float]:
+        """Perform model evaluation and calculate Inception score and FID score.
+
+        Returns:
+            Tuple[float, float]: The Inception score and FID score of the model on the validation dataset.
+        """
         self.model.eval()
+
+        # Save samples
+        LOGGER.info("Saving samples...")
+        with torch.no_grad():
+            for i in range(self.num_samples):
+                sample = self.model.sample(batch_size=1)
+                vutils.save_image(sample, self.save_dir.joinpath(f"{i:08d}.png"))
+
+        # Calculate metrics
         inception_score, fid_score = self.fid_metrics.calculate()
         LOGGER.info(f"Inception score: {inception_score:.2f}, FID score: {fid_score:.2f}")
 
