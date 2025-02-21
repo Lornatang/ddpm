@@ -1,4 +1,5 @@
 # Copyright (c) Lornatang. All rights reserved.
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Union, Tuple
@@ -27,6 +28,7 @@ class Trainer:
             self,
             diffusion_model: torch.nn.Module,
             root: Union[Path, str],
+            augment: bool = False,
             batch_size: int = 16,
             gradient_accumulate_every: int = 1,
             lr: float = 1e-4,
@@ -37,7 +39,7 @@ class Trainer:
             num_fid_samples: int = 50000,
             fid_stat_path: Union[Path, str] = "./datasets/stats/train.npz",
             save_and_sample_every: int = 1000,
-            save_dir: Union[Path, str] = "./results",
+            save_dir: Union[Path, str] = "./results/train",
             device: str = "0",
     ) -> None:
         """Initialize the Trainer class.
@@ -45,6 +47,7 @@ class Trainer:
         Args:
             diffusion_model (torch.nn.Module): The diffusion model to be trained.
             root (Union[Path, str]): The root directory for the dataset.
+            augment (bool, optional): Whether to apply data augmentation. Defaults to False.
             batch_size (int, optional): The batch size for training. Defaults to 16.
             gradient_accumulate_every (int, optional): Number of gradient accumulation steps. Defaults to 1.
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
@@ -55,7 +58,7 @@ class Trainer:
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.
-            save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results".
+            save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results/train".
         """
         super().__init__()
         self.diffusion_model = diffusion_model
@@ -87,11 +90,11 @@ class Trainer:
         transform = transforms.Compose([
             transforms.Resize(self.diffusion_model.image_size),
             transforms.CenterCrop(self.diffusion_model.image_size),
-            transforms.RandomHorizontalFlip(),
+            transforms.RandomHorizontalFlip() if augment else transforms.Lambda(lambda x: x),
             transforms.ToTensor()
         ])
         self.dataset = BaseImageFolder(root, transform)
-        data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, drop_last=True, persistent_workers=True)
+        data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, persistent_workers=True)
         self.data_loader = cycle_data_loader(data_loader)
 
         # Optimizer
@@ -104,9 +107,11 @@ class Trainer:
         self.step = 0
 
         # Metric computation
-        self.best_is = 0
-        self.best_fid = 1e10
-        self.fid_scorer = FIDMetrics(
+        self.inception_score = None
+        self.fid_score = None
+        self.best_inception_score = 0
+        self.best_fid_score = 1e10
+        self.fid_metrics = FIDMetrics(
             self.data_loader,
             self.batch_size,
             self.ema.ema,
@@ -126,21 +131,29 @@ class Trainer:
             self.ema.update(self.diffusion_model)
         self.step += 1
 
-    def save(self, milestone: str) -> None:
-        """Save model and ema model states to disk.
+    def save_model(self) -> None:
+        """Save model and ema model states to disk."""
+        model_weights_path = self.save_weights_dir.joinpath(f"{self.step}.pkl")
+        torch.save(
+            {
+                "step": self.step,
+                "best_inception_score": self.best_inception_score,
+                "best_fid_score": self.best_fid_score,
+                "model": None,  # resume and final checkpoints derive from EMA
+                "ema": deepcopy(self.ema.ema).half(),
+                "updates": self.ema.updates,
+                "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
+            },
+            model_weights_path,
+        )
+        shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("last.pkl"))
+        if self.best_fid_score > self.fid_score:
+            self.best_fid_score = self.fid_score
+            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_fid.pkl"))
 
-        Args:
-            milestone (str): milestone name
-        """
-        ckpt = {
-            "step": self.step,
-            "best_fid": self.best_fid,
-            "model": None,  # resume and final checkpoints derive from EMA
-            "ema": deepcopy(self.ema.ema).half(),
-            "updates": self.ema.updates,
-            "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
-        }
-        torch.save(ckpt, str(self.save_weights_dir.joinpath(f"{milestone}.pkl")))
+        if self.best_inception_score < self.inception_score:
+            self.best_inception_score = self.inception_score
+            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_is.pkl"))
 
     def train(self):
         with tqdm(total=self.num_steps, initial=self.step) as pbar:
@@ -177,18 +190,10 @@ class Trainer:
                     vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
 
                     # Calculate Inception Score and FID
-                    inception_score, fid_score = self.fid_scorer.calculate()
-                    LOGGER.info(f"Inception score: {inception_score:.2f}, FID score: {fid_score:.2f}")
+                    self.inception_score, self.fid_score = self.fid_metrics.calculate()
+                    LOGGER.info(f"Inception score: {self.inception_score:.2f}, FID score: {self.fid_score:.2f}")
 
-                    if self.best_fid > fid_score:
-                        self.best_fid = fid_score
-                        self.save("best_fid")
-
-                    if self.best_is < inception_score:
-                        self.best_is = inception_score
-                        self.save("best_is")
-
-                    self.save(str(self.step))
-                    self.save("last")
+                    # Save model
+                    self.save_model()
 
                 pbar.update(1)

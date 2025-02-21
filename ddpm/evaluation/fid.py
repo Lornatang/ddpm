@@ -43,7 +43,7 @@ class FIDMetrics:
         """
         self.batch_size = batch_size
         self.data_loader = data_loader
-        self.sampler = model
+        self.model = model
         self.dataset_stat_path = dataset_stat_path
         self.device = device
         self.num_samples = num_samples
@@ -125,13 +125,13 @@ class FIDMetrics:
         if not self.dataset_stat_loaded:
             self.load_dataset_stat()
 
-        self.sampler.eval()
+        self.model.eval()
         batch_size_list = num_to_groups(self.num_samples, self.batch_size)
         stacked_fake_logits = []
         stacked_fake_features = []
         LOGGER.info(f"Calculate metrics...")
         for batch_size in batch_size_list:
-            fake_samples = self.sampler.sample(batch_size=batch_size)
+            fake_samples = self.model.sample(batch_size=batch_size)
             fake_logits = self.calculate_inception_logits(fake_samples)
             fake_features = self.calculate_inception_features(fake_samples)
             stacked_fake_logits.append(fake_logits)

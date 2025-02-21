@@ -9,7 +9,8 @@ diffusion_model = GaussianDiffusion(model, 32, 1000, sampling_time_steps=250)
 trainer = Trainer(
     diffusion_model,
     "/mnt/data/larry/datasets/open_data/cifar10/train",
-    128,
+    True,
+    batch_size=128,
     lr=2e-4,
     betas=(0.9, 0.99),
     num_steps=800000,
