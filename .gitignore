@@ -34,5 +34,7 @@ _darcs
 
 # project dirs
 *.sh
+*.yaml
 datasets/*
 results/*
+tools/*
