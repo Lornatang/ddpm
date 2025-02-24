@@ -18,7 +18,7 @@ trainer = Trainer(
     max_grad_norm=1.0,
     num_fid_samples=50000,
     fid_stat_path="./datasets/stats/cifar10_train.npz",
-    save_and_sample_every=10000,
+    save_and_sample_every=20000,
     save_dir="./results/train/cifar10",
     device="0",
 )
