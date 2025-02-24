@@ -47,7 +47,7 @@ class GaussianDiffusion(nn.Module):
             immiscible (bool, optional): Whether to use immiscible diffusion. Defaults to False.
         """
         super().__init__()
-        assert not (type(self) == GaussianDiffusion and model.in_channels != model.out_dim), "model must have the same number of channels as out_dim"
+        assert not model.in_channels != model.out_dim, "model must have the same number of channels as out_dim"
 
         self.model = model
         self.in_channels = self.model.in_channels
