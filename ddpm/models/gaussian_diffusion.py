@@ -11,7 +11,7 @@ from torch.nn import functional as F_torch
 from tqdm import tqdm
 
 from ddpm.utils.ops import extract
-from ddpm.utils.scheduler import sigmoid_beta_schedule
+from ddpm.utils.scheduler import linear_beta_schedule
 
 ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start"])
 
@@ -60,7 +60,7 @@ class GaussianDiffusion(nn.Module):
         self.image_size = image_size
 
         # Generate beta schedule using sigmoid function
-        betas = sigmoid_beta_schedule(time_steps)
+        betas = linear_beta_schedule(time_steps)
 
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, 0)
@@ -153,8 +153,10 @@ class GaussianDiffusion(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: The posterior mean, variance, and log variance clipped tensors.
         """
-        posterior_mean = extract(self.posterior_mean_coef1, time_step, x_time_step.shape) * x_start + extract(self.posterior_mean_coef2, time_step,
-                                                                                                              x_time_step.shape) * x_time_step
+        posterior_mean = (
+                extract(self.posterior_mean_coef1, time_step, x_time_step.shape) * x_start +
+                extract(self.posterior_mean_coef2, time_step, x_time_step.shape) * x_time_step
+        )
         posterior_variance = extract(self.posterior_variance, time_step, x_time_step.shape)
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, time_step, x_time_step.shape)
 

@@ -4,5 +4,5 @@ from .ema import ModelEMA
 from .envs import NUM_THREADS
 from .events import LOGGER
 from .ops import extract, num_to_groups
-from .scheduler import sigmoid_beta_schedule
+from .scheduler import cosine_beta_schedule, linear_beta_schedule, sigmoid_beta_schedule
 from .torch_utils import de_parallel, get_gpu_info, is_parallel, select_device
