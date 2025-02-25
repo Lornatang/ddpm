@@ -11,5 +11,4 @@ validator = Validator(
     save_dir="./results/val/cifar10",
     device="0",
 )
-
 validator.validate()

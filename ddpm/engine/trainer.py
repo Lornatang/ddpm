@@ -17,6 +17,7 @@ from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
 from ddpm.evaluation.fid import FIDMetrics
 from ddpm.utils.checkpoint import convert_optimizer_state_dict_to_half
+from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.ema import ModelEMA
 from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
@@ -26,7 +27,7 @@ from ddpm.utils.torch_utils import select_device
 class Trainer:
     def __init__(
             self,
-            diffusion_model: torch.nn.Module,
+            model: torch.nn.Module,
             root: Union[Path, str],
             augment: bool = False,
             resume: bool = False,
@@ -46,7 +47,7 @@ class Trainer:
         """Initialize the Trainer class.
 
         Args:
-            diffusion_model (torch.nn.Module): The diffusion model to be trained.
+            model (torch.nn.Module): The diffusion model to be trained.
             root (Union[Path, str]): The root directory for the dataset.
             augment (bool, optional): Whether to apply data augmentation. Defaults to False.
             resume (bool, optional): Whether to resume training. Defaults to False.
@@ -63,7 +64,7 @@ class Trainer:
             save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results/train".
         """
         super().__init__()
-        self.diffusion_model = diffusion_model
+        self.model = model
         self.root = root
         self.augment = augment
         self.resume = resume
@@ -85,18 +86,18 @@ class Trainer:
         self.device = select_device(device, self.batch_size)
 
         # Model
-        self.diffusion_model = diffusion_model.to(self.device)
+        self.model = model.to(self.device)
 
         # EMA
-        self.ema = ModelEMA(self.diffusion_model)
+        self.ema = ModelEMA(self.model)
 
         # AMP
         self.scaler = torch.amp.GradScaler("cuda", enabled=True)
 
         # Dataset and dataloader
         transform = transforms.Compose([
-            transforms.Resize(self.diffusion_model.image_size),
-            transforms.CenterCrop(self.diffusion_model.image_size),
+            transforms.Resize(self.model.image_size),
+            transforms.CenterCrop(self.model.image_size),
             transforms.RandomHorizontalFlip() if self.augment else transforms.Lambda(lambda x: x),
             transforms.ToTensor()
         ])
@@ -105,7 +106,7 @@ class Trainer:
         self.data_loader = cycle_data_loader(data_loader)
 
         # Optimizer
-        self.optimizer = Adam(self.diffusion_model.parameters(), lr, betas)
+        self.optimizer = Adam(self.model.parameters(), lr, betas)
 
         # Resume
         self.resume_training()
@@ -130,12 +131,12 @@ class Trainer:
     def optimizer_step(self) -> None:
         """Perform a single step of the training optimizer with gradient clipping and EMA update."""
         self.scaler.unscale_(self.optimizer)  # unscale gradients
-        nn.utils.clip_grad_norm_(self.diffusion_model.parameters(), max_norm=1.0)  # clip gradients
+        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)  # clip gradients
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad()
         if self.ema:
-            self.ema.update(self.diffusion_model)
+            self.ema.update(self.model)
         self.current_step += 1
 
     def resume_training(self) -> None:
@@ -143,7 +144,7 @@ class Trainer:
         if not self.resume:
             return
 
-        checkpoint = torch.load(self.save_weights_dir.joinpath("last.pkl"), map_location=self.device, weights_only=False)
+        _, checkpoint = load_checkpoint(self.save_weights_dir.joinpath("last.pkl"), self.device)
         best_inception_score = 0
         best_fid_score = 10e0
         current_step = checkpoint.get("step", -1) + 1
@@ -170,7 +171,7 @@ class Trainer:
     def train(self):
         with tqdm(total=self.num_steps, initial=self.current_step) as pbar:
             while self.current_step < self.num_steps:
-                self.diffusion_model.train()
+                self.model.train()
 
                 total_loss = 0.
                 for _ in range(self.gradient_accumulate_every):
@@ -178,7 +179,7 @@ class Trainer:
 
                     # Forward
                     with torch.amp.autocast("cuda", enabled=True):
-                        loss = self.diffusion_model(data)
+                        loss = self.model(data)
                         loss /= self.gradient_accumulate_every
                         total_loss += loss.item()
 

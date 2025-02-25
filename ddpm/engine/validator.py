@@ -5,14 +5,15 @@ from typing import Tuple, Union
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torchvision import utils as vutils
 
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
 from ddpm.evaluation.fid import FIDMetrics
+from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.events import LOGGER
 from ddpm.utils.torch_utils import select_device
-from torchvision import utils as vutils
-
+from tqdm import tqdm
 __all__ = [
     "Validator",
 ]
@@ -53,8 +54,7 @@ class Validator:
         self.device = select_device(device, self.batch_size)
 
         # Model
-        checkpoint = torch.load(self.model_weights_path, weights_only=False)
-        self.model = checkpoint["ema"] if "ema" in checkpoint else checkpoint["model"]
+        self.model, _ = load_checkpoint(self.model_weights_path, self.device)
         self.model.float()
 
         # Dataset and dataloader
@@ -83,12 +83,9 @@ class Validator:
         Returns:
             Tuple[float, float]: The Inception score and FID score of the model on the validation dataset.
         """
-        self.model.eval()
-
         # Save samples
-        LOGGER.info("Saving samples...")
         with torch.no_grad():
-            for i in range(self.num_samples):
+            for i in tqdm(range(self.num_samples), desc="Saving samples", unit="sample"):
                 sample = self.model.sample(batch_size=1)
                 vutils.save_image(sample, self.save_dir.joinpath(f"{i:08d}.png"))
 
