@@ -231,10 +231,10 @@ class GaussianDiffusion(nn.Module):
         # Sampling loop over all time steps in reverse order
         for time_step in tqdm(reversed(range(0, self.num_time_steps)), desc="sampling loop time step", total=self.num_time_steps):
             # Conditional input for self-conditioning
-            self_cond = x_start if self.self_condition else None
+            self_condition = x_start if self.self_condition else None
 
             # Perform a single step of sampling
-            image, x_start = self.p_sample(image, time_step, self_cond)
+            image, x_start = self.p_sample(image, time_step, self_condition)
 
             # Append the current image to the list of images
             images.append(image)
@@ -275,10 +275,10 @@ class GaussianDiffusion(nn.Module):
             # Create a tensor with the current time step for all samples
             time_cond = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
             # Conditional input for self-conditioning
-            self_cond = x_start if self.self_condition else None
+            self_condition = x_start if self.self_condition else None
 
             # Predict the noise and reconstruct x_start
-            pred_noise, x_start, *_ = self.model_predictions(image, time_cond, self_cond, clip_x_start=True)
+            pred_noise, x_start, *_ = self.model_predictions(image, time_cond, self_condition, clip_x_start=True)
 
             # If the next time step is the final step, set the image to x_start
             if next_time < 0:
@@ -487,3 +487,38 @@ class GaussianDiffusion(nn.Module):
         loss = (loss * loss_weight).mean()
 
         return loss
+
+    @torch.inference_mode()
+    def interpolate(self, x1: torch.Tensor, x2: torch.Tensor, time_step: Optional[int] = None, lambda_ratio: float = 0.5) -> torch.Tensor:
+        """Interpolate between two images using the diffusion process.
+
+        Args:
+            x1 (torch.Tensor): The first image tensor.
+            x2 (torch.Tensor): The second image tensor.
+            time_step (Optional[int], optional): The time step to start the interpolation. Defaults to the last time step.
+            lambda_ratio (float, optional): The interpolation ratio between x1 and x2. Defaults to 0.5.
+
+        Returns:
+            torch.Tensor: The interpolated image tensor.
+        """
+        assert x1.shape == x2.shape, "Input images must have the same shape"
+
+        # Set the time step to the last time step if not provided
+        time_step = self.num_timesteps - 1 if time_step is None else time_step
+
+        # Create a tensor filled with the time step value
+        t_batched = torch.full((x1.shape[0],), time_step, device=x1.device)
+
+        # Sample noisy versions of x1 and x2 at the given time step
+        xt1, xt2 = map(lambda x: self.q_sample(x, t_batched), (x1, x2))
+
+        # Interpolate between the noisy versions of x1 and x2
+        image = (1 - lambda_ratio) * xt1 + lambda_ratio * xt2
+
+        x_start = None
+        # Reverse diffusion process to generate the interpolated image
+        for i in tqdm(reversed(range(0, time_step)), desc="interpolation sample time step", total=time_step):
+            self_condition = x_start if self.self_condition else None
+            image, x_start = self.p_sample(image, i, self_condition)
+
+        return image
