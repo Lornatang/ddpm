@@ -23,7 +23,7 @@ class UNet(nn.Module):
             init_dim: Optional[int] = None,
             out_dim: Optional[int] = None,
             in_channels: int = 3,
-            channels_multipliers: Tuple[int, ...] = (1, 2, 4, 8),
+            channels_multipliers: Tuple[int, ...] = (1, 2, 2, 2),
             self_condition: bool = False,
             learned_variance: bool = False,
             sinusoidal_pos_emb_theta: int = 10000,
@@ -39,7 +39,7 @@ class UNet(nn.Module):
             init_dim (Optional[int], optional): Initial dimension for the first convolution. Defaults to None.
             out_dim (Optional[int], optional): Output dimension. Defaults to None.
             in_channels (int): Number of input channels. Defaults to 3.
-            channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 4, 8).
+            channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 2, 2).
             self_condition (bool): Whether to use self-conditioning. Defaults to False.
             learned_variance (bool): Whether to learn variance. Defaults to False.
             sinusoidal_pos_emb_theta (int): Theta value for sinusoidal positional embedding. Defaults to 10000.
