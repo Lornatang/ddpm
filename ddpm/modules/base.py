@@ -21,7 +21,7 @@ class Block(nn.Module):
             dropout (float, optional): Dropout rate. Defaults to 0.
         """
         super().__init__()
-        self.proj: nn.Module = nn.Conv2d(in_channels, out_channels, (3, 3), padding=(1, 1))
+        self.proj: nn.Module = nn.Conv2d(in_channels, out_channels, (3, 3), padding=(1, 1), bias=False)
         self.norm: nn.Module = RMSNorm(out_channels)
         self.act: nn.Module = nn.SiLU(True)
         self.dropout: nn.Module = nn.Dropout(dropout, True)

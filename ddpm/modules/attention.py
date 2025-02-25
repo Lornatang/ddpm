@@ -95,7 +95,7 @@ class LinearAttention(nn.Module):
         self.to_qkv: nn.Module = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
 
         self.to_out: nn.Module = nn.Sequential(
-            nn.Conv2d(hidden_dim, dim, 1),
+            nn.Conv2d(hidden_dim, dim, 1, bias=False),
             RMSNorm(dim)
         )
 
