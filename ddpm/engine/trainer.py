@@ -29,6 +29,7 @@ class Trainer:
             diffusion_model: torch.nn.Module,
             root: Union[Path, str],
             augment: bool = False,
+            resume: bool = False,
             batch_size: int = 128,
             gradient_accumulate_every: int = 1,
             lr: float = 1e-4,
@@ -48,6 +49,7 @@ class Trainer:
             diffusion_model (torch.nn.Module): The diffusion model to be trained.
             root (Union[Path, str]): The root directory for the dataset.
             augment (bool, optional): Whether to apply data augmentation. Defaults to False.
+            resume (bool, optional): Whether to resume training. Defaults to False.
             batch_size (int, optional): The batch size for training. Defaults to 128.
             gradient_accumulate_every (int, optional): Number of gradient accumulation steps. Defaults to 1.
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
@@ -62,7 +64,9 @@ class Trainer:
         """
         super().__init__()
         self.diffusion_model = diffusion_model
-        self.channels = diffusion_model.in_channels
+        self.root = root
+        self.augment = augment
+        self.resume = resume
         self.batch_size = batch_size
         self.gradient_accumulate_every = gradient_accumulate_every
         self.lr = lr
@@ -83,6 +87,9 @@ class Trainer:
         # Model
         self.diffusion_model = diffusion_model.to(self.device)
 
+        # EMA
+        self.ema = ModelEMA(self.diffusion_model)
+
         # AMP
         self.scaler = torch.amp.GradScaler("cuda", enabled=True)
 
@@ -90,21 +97,21 @@ class Trainer:
         transform = transforms.Compose([
             transforms.Resize(self.diffusion_model.image_size),
             transforms.CenterCrop(self.diffusion_model.image_size),
-            transforms.RandomHorizontalFlip() if augment else transforms.Lambda(lambda x: x),
+            transforms.RandomHorizontalFlip() if self.augment else transforms.Lambda(lambda x: x),
             transforms.ToTensor()
         ])
-        self.dataset = BaseImageFolder(root, transform)
+        self.dataset = BaseImageFolder(self.root, transform)
         data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, persistent_workers=True)
         self.data_loader = cycle_data_loader(data_loader)
 
         # Optimizer
         self.optimizer = Adam(self.diffusion_model.parameters(), lr, betas)
 
-        # Ema
-        self.ema = ModelEMA(self.diffusion_model)
+        # Resume
+        self.resume_training()
 
         # Step counter state
-        self.step = 0
+        self.current_step = 0
 
         # Metric computation
         self.inception_score = None
@@ -129,35 +136,40 @@ class Trainer:
         self.optimizer.zero_grad()
         if self.ema:
             self.ema.update(self.diffusion_model)
-        self.step += 1
+        self.current_step += 1
 
-    def save_model(self) -> None:
-        """Save model and ema model states to disk."""
-        model_weights_path = self.save_weights_dir.joinpath(f"{self.step}.pkl")
-        torch.save(
-            {
-                "step": self.step,
-                "best_inception_score": self.best_inception_score,
-                "best_fid_score": self.best_fid_score,
-                "model": None,  # resume and final checkpoints derive from EMA
-                "ema": deepcopy(self.ema.ema).half(),
-                "updates": self.ema.updates,
-                "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
-            },
-            model_weights_path,
-        )
-        shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("last.pkl"))
-        if self.best_fid_score > self.fid_score:
-            self.best_fid_score = self.fid_score
-            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_fid.pkl"))
+    def resume_training(self) -> None:
+        """Resume training from a checkpoint."""
+        if not self.resume:
+            return
 
-        if self.best_inception_score < self.inception_score:
-            self.best_inception_score = self.inception_score
-            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_is.pkl"))
+        checkpoint = torch.load(self.save_weights_dir.joinpath("last.pkl"), map_location=self.device, weights_only=False)
+        best_inception_score = 0
+        best_fid_score = 10e0
+        current_step = checkpoint.get("step", -1) + 1
+
+        if checkpoint.get("optimizer", None) is not None:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])  # optimizer
+            best_inception_score = checkpoint["best_inception_score"]
+            best_fid_score = checkpoint["best_fid_score"]
+
+        if self.ema and checkpoint.get("ema"):
+            self.ema.ema.load_state_dict(checkpoint["ema"].float().state_dict())  # EMA
+            self.ema.updates = checkpoint["updates"]
+
+        assert current_step > 0, f"Start a new training without resuming"
+        LOGGER.info(f"Resuming training from epoch {current_step + 1} to {self.num_steps} total steps")
+        if self.num_steps < current_step:
+            LOGGER.info(f"This model has been trained for {current_step} steps. Fine-tuning for {self.num_steps} more steps.")
+            self.num_steps += current_step  # finetune additional steps
+
+        self.best_inception_score = best_inception_score
+        self.best_fid_score = best_fid_score
+        self.current_step = current_step
 
     def train(self):
-        with tqdm(total=self.num_steps, initial=self.step) as pbar:
-            while self.step < self.num_steps:
+        with tqdm(total=self.num_steps, initial=self.current_step) as pbar:
+            while self.current_step < self.num_steps:
                 self.diffusion_model.train()
 
                 total_loss = 0.
@@ -179,7 +191,7 @@ class Trainer:
                 self.optimizer_step()
 
                 # Save and sample
-                if self.step != 0 and (self.step % self.save_and_sample_every) == 0:
+                if self.current_step != 0 and (self.current_step % self.save_and_sample_every) == 0:
                     self.ema.ema.eval()
 
                     with torch.no_grad():
@@ -187,7 +199,7 @@ class Trainer:
                         all_images_list = list(map(lambda num_images: self.ema.ema.sample(batch_size=num_images), batches))
 
                     all_images = torch.cat(all_images_list, dim=0)
-                    vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.step}.png"), nrow=int(math.sqrt(self.num_samples)))
+                    vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.current_step}.png"), nrow=int(math.sqrt(self.num_samples)))
 
                     # Calculate Inception Score and FID
                     self.inception_score, self.fid_score = self.fid_metrics.calculate()
@@ -197,3 +209,27 @@ class Trainer:
                     self.save_model()
 
                 pbar.update(1)
+
+    def save_model(self) -> None:
+        """Save model and ema model states to disk."""
+        model_weights_path = self.save_weights_dir.joinpath(f"{self.current_step}.pkl")
+        torch.save(
+            {
+                "step": self.current_step,
+                "best_inception_score": self.best_inception_score,
+                "best_fid_score": self.best_fid_score,
+                "model": None,  # resume and final checkpoints derive from EMA
+                "ema": deepcopy(self.ema.ema).half(),
+                "updates": self.ema.updates,
+                "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
+            },
+            model_weights_path,
+        )
+        shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("last.pkl"))
+        if self.best_fid_score > self.fid_score:
+            self.best_fid_score = self.fid_score
+            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_fid.pkl"))
+
+        if self.best_inception_score < self.inception_score:
+            self.best_inception_score = self.inception_score
+            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_is.pkl"))
