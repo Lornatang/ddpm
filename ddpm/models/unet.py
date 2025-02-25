@@ -22,7 +22,7 @@ class UNet(nn.Module):
             dim: int,
             init_dim: Optional[int] = None,
             out_dim: Optional[int] = None,
-            in_channels: int = 128,
+            in_channels: int = 3,
             channels_multipliers: Tuple[int, ...] = (1, 2, 2, 2),
             self_condition: bool = False,
             learned_variance: bool = False,
@@ -38,7 +38,7 @@ class UNet(nn.Module):
             dim (int): Base dimension for the model.
             init_dim (Optional[int], optional): Initial dimension for the first convolution. Defaults to None.
             out_dim (Optional[int], optional): Output dimension. Defaults to None.
-            in_channels (int): Number of input channels. Defaults to 128.
+            in_channels (int): Number of input channels. Defaults to 3.
             channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 2, 2).
             self_condition (bool): Whether to use self-conditioning. Defaults to False.
             learned_variance (bool): Whether to learn variance. Defaults to False.
