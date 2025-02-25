@@ -11,6 +11,7 @@ trainer = Trainer(
     "/mnt/data/larry/datasets/open_data/cifar10/train",
     True,
     batch_size=128,
+    gradient_accumulate_every=1,
     lr=2e-4,
     betas=(0.9, 0.999),
     num_steps=800000,
