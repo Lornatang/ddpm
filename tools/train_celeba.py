@@ -12,7 +12,7 @@ trainer = Trainer(
     False,
     batch_size=64,
     lr=2e-5,
-    betas=(0.9, 0.99),
+    betas=(0.9, 0.999),
     num_steps=500000,
     num_samples=16,
     max_grad_norm=1.0,
