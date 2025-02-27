@@ -8,7 +8,6 @@ from einops import rearrange, reduce
 from scipy.optimize import linear_sum_assignment
 from torch import nn
 from torch.nn import functional as F_torch
-from tqdm import tqdm
 
 from ddpm.utils.ops import extract
 from ddpm.utils.scheduler import linear_beta_schedule
@@ -231,7 +230,7 @@ class GaussianDiffusion(nn.Module):
         x_start = None
 
         # Sampling loop over all time steps in reverse order
-        for time_step in tqdm(reversed(range(0, self.num_time_steps)), desc="sampling loop time step", total=self.num_time_steps):
+        for time_step in reversed(range(0, self.num_time_steps)):
             # Conditional input for self-conditioning
             self_condition = x_start if self.self_condition else None
 
@@ -273,7 +272,7 @@ class GaussianDiffusion(nn.Module):
         x_start = None
 
         # Sampling loop over all time pairs
-        for current_time, next_time in tqdm(time_pairs, desc="Sampling loop time step"):
+        for current_time, next_time in time_pairs:
             # Create a tensor with the current time step for all samples
             time_cond = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
             # Conditional input for self-conditioning
@@ -519,7 +518,7 @@ class GaussianDiffusion(nn.Module):
 
         x_start = None
         # Reverse diffusion process to generate the interpolated image
-        for i in tqdm(reversed(range(0, time_step)), desc="interpolation sample time step", total=time_step):
+        for i in reversed(range(0, time_step)):
             self_condition = x_start if self.self_condition else None
             image, x_start = self.p_sample(image, i, self_condition)
 
