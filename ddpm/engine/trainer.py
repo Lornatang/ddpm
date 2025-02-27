@@ -36,8 +36,9 @@ class Trainer:
             lr: float = 1e-4,
             betas: Tuple[float, float] = (0.9, 0.99),
             num_steps: int = 100000,
-            num_samples: int = 16,
             max_grad_norm: float = 1.0,
+            val: bool = False,
+            num_samples: int = 16,
             num_fid_samples: int = 50000,
             fid_stat_path: Union[Path, str] = "./datasets/stats/train.npz",
             save_and_sample_every: int = 1000,
@@ -56,9 +57,10 @@ class Trainer:
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
             betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.99).
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
+            max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
+            val (bool, optional): Whether to use validation. Defaults to False.
             num_samples (int, optional): Number of samples to generate. Defaults to 16.
             fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/stats/train.npz``.
-            max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.
             save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results/train".
@@ -73,8 +75,9 @@ class Trainer:
         self.lr = lr
         self.betas = betas
         self.num_steps = num_steps
-        self.num_samples = num_samples
         self.max_grad_norm = max_grad_norm
+        self.val = val
+        self.num_samples = num_samples
         self.num_fid_samples = num_fid_samples
         self.fid_stat_path = fid_stat_path
         self.save_and_sample_every = save_and_sample_every
@@ -117,16 +120,20 @@ class Trainer:
         # Metric computation
         self.inception_score = None
         self.fid_score = None
-        self.best_inception_score = 0
-        self.best_fid_score = 1e10
-        self.fid_metrics = FIDMetrics(
-            self.data_loader,
-            self.batch_size,
-            self.ema.ema,
-            dataset_stat_path=self.fid_stat_path,
-            num_samples=self.num_fid_samples,
-            device=self.device,
-        )
+        self.best_inception_score = None
+        self.best_fid_score = None
+
+        if val:
+            self.best_inception_score = 0
+            self.best_fid_score = 1e10
+            self.fid_metrics = FIDMetrics(
+                self.data_loader,
+                self.batch_size,
+                self.ema.ema,
+                dataset_stat_path=self.fid_stat_path,
+                num_samples=self.num_fid_samples,
+                device=self.device,
+            )
 
     def optimizer_step(self) -> None:
         """Perform a single step of the training optimizer with gradient clipping and EMA update."""
@@ -202,9 +209,10 @@ class Trainer:
                     all_images = torch.cat(all_images_list, dim=0)
                     vutils.save_image(all_images, self.save_samples_dir.joinpath(f"{self.current_step}.png"), nrow=int(math.sqrt(self.num_samples)))
 
-                    # Calculate Inception Score and FID
-                    self.inception_score, self.fid_score = self.fid_metrics.calculate()
-                    LOGGER.info(f"Inception score: {self.inception_score:.2f}, FID score: {self.fid_score:.2f}")
+                    if self.val:
+                        # Calculate Inception Score and FID
+                        self.inception_score, self.fid_score = self.fid_metrics.calculate()
+                        LOGGER.info(f"Inception score: {self.inception_score:.2f}, FID score: {self.fid_score:.2f}")
 
                     # Save model
                     self.save_model()
@@ -227,10 +235,12 @@ class Trainer:
             model_weights_path,
         )
         shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("last.pkl"))
-        if self.best_fid_score > self.fid_score:
-            self.best_fid_score = self.fid_score
-            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_fid.pkl"))
 
-        if self.best_inception_score < self.inception_score:
-            self.best_inception_score = self.inception_score
-            shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_is.pkl"))
+        if self.val:
+            if self.best_fid_score > self.fid_score:
+                self.best_fid_score = self.fid_score
+                shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_fid.pkl"))
+
+            if self.best_inception_score < self.inception_score:
+                self.best_inception_score = self.inception_score
+                shutil.copyfile(model_weights_path, self.save_weights_dir.joinpath("best_is.pkl"))

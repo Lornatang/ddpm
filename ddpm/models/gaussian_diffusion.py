@@ -413,7 +413,7 @@ class GaussianDiffusion(nn.Module):
             torch.Tensor: The predicted noise tensor.
         """
         return (
-                (extract(self.sqrt_recip_alphas_cumprod, time_step, x_time_step.shape) * x_time_step - x0) *
+                (extract(self.sqrt_recip_alphas_cumprod, time_step, x_time_step.shape) * x_time_step - x0) /
                 extract(self.sqrt_recipm1_alphas_cumprod, time_step, x_time_step.shape)
         )
 

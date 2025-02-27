@@ -1,4 +1,5 @@
 # Copyright (c) Lornatang. All rights reserved.
+import uuid
 from pathlib import Path
 from typing import Tuple, Union
 
@@ -6,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision import utils as vutils
+from tqdm import tqdm
 
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
@@ -13,7 +15,7 @@ from ddpm.evaluation.fid import FIDMetrics
 from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.events import LOGGER
 from ddpm.utils.torch_utils import select_device
-from tqdm import tqdm
+
 __all__ = [
     "Validator",
 ]
@@ -87,7 +89,7 @@ class Validator:
         with torch.no_grad():
             for i in tqdm(range(self.num_samples), desc="Saving samples", unit="sample"):
                 sample = self.model.sample(batch_size=1)
-                vutils.save_image(sample, self.save_dir.joinpath(f"{i:08d}.png"))
+                vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
 
         # Calculate metrics
         inception_score, fid_score = self.fid_metrics.calculate()
