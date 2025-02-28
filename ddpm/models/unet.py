@@ -31,8 +31,7 @@ class UNet(nn.Module):
             attn_dim_head: int = 32,
             attn_heads: int = 4,
     ) -> None:
-        """
-        Initializes the UNet module.
+        """Initializes the UNet module.
 
         Args:
             dim (int): Base dimension for the model.
