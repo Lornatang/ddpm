@@ -7,7 +7,7 @@ validator = Validator(
     128,
     num_samples=16,
     num_fid_samples=50000,
-    fid_stat_path="./datasets/stats/cifar10_val.npz",
+    fid_stat_path="./datasets/stats/cifar10_train.npz",
     save_dir="./results/val/cifar10",
     device="0",
 )
