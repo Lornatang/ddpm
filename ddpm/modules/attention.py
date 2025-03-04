@@ -4,6 +4,7 @@ from functools import partial
 import torch
 from einops import rearrange, repeat
 from torch import nn
+from torch.nn import functional as F_torch
 
 from .activation import RMSNorm
 from .attend import Attend
@@ -118,8 +119,8 @@ class LinearAttention(nn.Module):
         mk, mv = map(lambda t: repeat(t, "h c n -> b h c n", b=b), self.mem_kv)
         k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
 
-        q = q.softmax(dim = -2)
-        k = k.softmax(dim = -1)
+        q = q.softmax(dim=-2)
+        k = k.softmax(dim=-1)
 
         q = q * self.scale
 

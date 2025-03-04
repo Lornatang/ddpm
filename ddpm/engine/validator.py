@@ -87,7 +87,7 @@ class Validator:
         """
         # Save samples
         with torch.no_grad():
-            for i in tqdm(range(self.num_samples), desc="Saving samples", unit="sample"):
+            for _ in tqdm(range(self.num_samples), desc="Saving samples", unit="sample"):
                 sample = self.model.sample(batch_size=1)
                 vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
 

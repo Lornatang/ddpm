@@ -25,27 +25,31 @@ class Attend(nn.Module):
         """
         super().__init__()
         self.dropout = dropout
-        self.scale = scale
-        self.attn_dropout = nn.Dropout(dropout)
         self.flash = flash
+        self.scale = scale
+
+        self.attn_dropout = nn.Dropout(dropout, inplace=True)
 
     def flash_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Computes flash attention.
+        """Performs scaled dot-product attention using the CUDA Flash Attention implementation
+        for improved performance and memory efficiency.
 
         Args:
-            q (torch.Tensor): Query tensor.
-            k (torch.Tensor): Key tensor.
-            v (torch.Tensor): Value tensor.
+            q (torch.Tensor): Query tensor of shape [batch_size, heads, seq_len_q, dim_head]
+            k (torch.Tensor): Key tensor of shape [batch_size, heads, seq_len_k, dim_head]
+            v (torch.Tensor): Value tensor of shape [batch_size, heads, seq_len_k, dim_head]
 
         Returns:
-            torch.Tensor: Output tensor after applying flash attention.
+            torch.Tensor: Output attention tensor of shape [batch_size, heads, seq_len_q, dim_head]
         """
         if self.scale is not None:
             default_scale = q.shape[-1]
             q = q * (self.scale / default_scale)
 
+        # Ensure tensors are contiguous in memory for optimal performance
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
-        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
             out = F_torch.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.)
 
         return out

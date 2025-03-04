@@ -30,6 +30,7 @@ class UNet(nn.Module):
             dropout: float = 0.,
             attn_dim_head: int = 32,
             attn_heads: int = 4,
+            flash: bool = False,
     ) -> None:
         """Initializes the UNet module.
 
@@ -45,6 +46,7 @@ class UNet(nn.Module):
             dropout (float): Dropout rate. Defaults to 0.
             attn_dim_head (int): Dimension of each attention head. Defaults to 32.
             attn_heads (int): Number of attention heads. Defaults to 4.
+            flash (bool): Whether to flash attention. Defaults to False.
         """
         super().__init__()
         self.dim = dim
@@ -77,7 +79,7 @@ class UNet(nn.Module):
         assert len(full_attn) == len(channels_multipliers)
 
         # prepare blocks
-        attention_block = partial(Attention, flash=False)
+        attention_block = partial(Attention, flash=flash)
         residual_block = partial(Residual, time_embedding_dim=time_embedding_dim, dropout=dropout)
 
         # layers
