@@ -45,7 +45,6 @@ class Trainer:
             save_dir: Union[Path, str] = "./results/train",
             device: str = "0",
             seed: int = 0,
-            deterministic: bool = False,
     ) -> None:
         """Initialize the Trainer class.
 
@@ -68,7 +67,6 @@ class Trainer:
             save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results/train".
             device (str, optional): Device to use. Defaults to "0".
             seed (int, optional): Random seed. Defaults to 0.
-            deterministic (bool, optional): Whether to set CuDNN backend to deterministic. Defaults to False.
         """
         super().__init__()
         self.model = model
@@ -93,10 +91,9 @@ class Trainer:
         self.save_weights_dir.mkdir(parents=True, exist_ok=True)
         self.device = select_device(device, self.batch_size)
         self.seed = seed
-        self.deterministic = deterministic
 
         # Set seed
-        set_seed_everything(self.seed + 1 + RANK, deterministic=self.deterministic)
+        set_seed_everything(self.seed + 1 + RANK)
 
         # Step counter state
         self.current_step = 0

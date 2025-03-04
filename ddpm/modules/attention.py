@@ -4,7 +4,6 @@ from functools import partial
 import torch
 from einops import rearrange, repeat
 from torch import nn
-from torch.nn import functional as F_torch
 
 from .activation import RMSNorm
 from .attend import Attend

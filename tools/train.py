@@ -24,7 +24,6 @@ trainer = Trainer(
     save_dir="./results/train/cifar10",
     device="0",
     seed=0,
-    deterministic=True,
 )
 
 trainer.train()
