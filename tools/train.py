@@ -23,6 +23,8 @@ trainer = Trainer(
     save_and_sample_every=10000,
     save_dir="./results/train/cifar10",
     device="0",
+    seed=0,
+    deterministic=True,
 )
 
 trainer.train()

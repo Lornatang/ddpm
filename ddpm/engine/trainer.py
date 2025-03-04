@@ -18,6 +18,7 @@ from ddpm.evaluation.fid import FIDMetrics
 from ddpm.utils.checkpoint import convert_optimizer_state_dict_to_half
 from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.ema import ModelEMA
+from ddpm.utils.envs import RANK, set_seed_everything
 from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
 from ddpm.utils.torch_utils import select_device
@@ -43,6 +44,8 @@ class Trainer:
             save_and_sample_every: int = 1000,
             save_dir: Union[Path, str] = "./results/train",
             device: str = "0",
+            seed: int = 0,
+            deterministic: bool = False,
     ) -> None:
         """Initialize the Trainer class.
 
@@ -63,6 +66,9 @@ class Trainer:
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.
             save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results/train".
+            device (str, optional): Device to use. Defaults to "0".
+            seed (int, optional): Random seed. Defaults to 0.
+            deterministic (bool, optional): Whether to set CuDNN backend to deterministic. Defaults to False.
         """
         super().__init__()
         self.model = model
@@ -86,6 +92,11 @@ class Trainer:
         self.save_samples_dir.mkdir(parents=True, exist_ok=True)
         self.save_weights_dir.mkdir(parents=True, exist_ok=True)
         self.device = select_device(device, self.batch_size)
+        self.seed = seed
+        self.deterministic = deterministic
+
+        # Set seed
+        set_seed_everything(self.seed + 1 + RANK, deterministic=self.deterministic)
 
         # Step counter state
         self.current_step = 0
