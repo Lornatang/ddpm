@@ -109,6 +109,7 @@ class Trainer:
 
         # Model
         self.model = model
+        self.image_size = self.model.image_size
         self.ema = None
 
         # Optimizer
@@ -222,8 +223,8 @@ class Trainer:
         # Dataloaders
         batch_size = self.batch_size // max(world_size, 1)
         transform = transforms.Compose([
-            transforms.Resize(self.model.module.image_size if isinstance(self.model, nn.DataParallel) else self.model.image_size),
-            transforms.CenterCrop(self.model.module.image_size if isinstance(self.model, nn.DataParallel) else self.model.image_size),
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
             transforms.RandomHorizontalFlip() if self.augment else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
