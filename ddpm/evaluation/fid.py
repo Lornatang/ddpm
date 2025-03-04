@@ -129,8 +129,7 @@ class FIDMetrics:
         batch_size_list = num_to_groups(self.num_samples, self.batch_size)
         stacked_fake_logits = []
         stacked_fake_features = []
-        LOGGER.info(f"Calculate metrics...")
-        for batch_size in tqdm(batch_size_list):
+        for batch_size in tqdm(batch_size_list, desc="Calculate metrics"):
             fake_samples = self.model.sample(batch_size=batch_size)
             fake_logits = self.calculate_inception_logits(fake_samples)
             fake_features = self.calculate_inception_features(fake_samples)
