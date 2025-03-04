@@ -2,7 +2,7 @@
 from ddpm.engine.validator import Validator
 
 validator = Validator(
-    "./results/train/cifar10/weights/best_fid.pkl",
+    "./results/train/cifar10/weights/last.pkl",
     "/mnt/data/larry/datasets/open_data/cifar10/train",
     128,
     num_samples=16,
