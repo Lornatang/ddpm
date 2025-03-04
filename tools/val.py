@@ -10,7 +10,7 @@ validator = Validator(
     num_samples=16,
     num_fid_samples=50000,
     fid_stat_path="./datasets/stats/cifar10_train.npz",
-    save_dir=f"./results/val/cifar10-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}",
+    save_dir=f"./results/val/cifar10-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     device="0",
 )
 validator.validate()
