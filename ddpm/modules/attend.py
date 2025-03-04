@@ -46,11 +46,11 @@ class Attend(nn.Module):
             default_scale = q.shape[-1]
             q = q * (self.scale / default_scale)
 
-        # Ensure tensors are contiguous in memory for optimal performance
-        q, k, v = map(lambda t: t.contiguous(), (q, k, v))
+        # Ensure tensors are contiguous and half in memory for optimal performance
+        q, k, v = map(lambda t: t.contiguous().half(), (q, k, v))
 
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-            out = F_torch.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.)
+            out = F_torch.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.).float()
 
         return out
 
