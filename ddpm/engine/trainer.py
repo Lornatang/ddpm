@@ -273,6 +273,7 @@ class Trainer:
                 # Log and save
                 if RANK in {-1, 0}:
                     pbar.set_description(f"Loss: {total_loss:.4e}")
+                    pbar.update(1)
 
                     # Save and sample
                     if self.current_step != 0 and (self.current_step % self.save_and_sample_every) == 0:
@@ -296,8 +297,6 @@ class Trainer:
 
                         # Save model
                         self.save_model()
-
-                pbar.update(1)
 
         # End
         if RANK in {-1, 0}:

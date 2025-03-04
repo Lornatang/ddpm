@@ -1,4 +1,6 @@
 # Copyright (c) Lornatang. All rights reserved.
+from datetime import datetime
+
 from ddpm.engine.trainer import Trainer
 from ddpm.models.gaussian_diffusion import GaussianDiffusion
 from ddpm.models.unet import UNet
@@ -21,7 +23,7 @@ trainer = Trainer(
     num_fid_samples=50000,
     fid_stat_path="./datasets/stats/celeba_train.npz",
     save_and_sample_every=10000,
-    save_dir="./results/train/celeba",
+    save_dir=f"./results/train/celeba-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}",
     device="0",
     seed=0,
 )
