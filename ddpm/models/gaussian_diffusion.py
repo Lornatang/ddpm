@@ -128,9 +128,6 @@ class GaussianDiffusion(nn.Module):
         # Randomly sample time steps for each image in the batch
         sample_time = torch.randint(0, self.num_time_steps, (batch_size,), device=image.device).long()
 
-        # Normalize the input image to the range [-1, 1]
-        image = image * 2. - 1.
-
         # Compute the loss for the input batch of images
         out = self.p_losses(image, sample_time, *args, **kwargs)
 

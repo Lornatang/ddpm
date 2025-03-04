@@ -6,8 +6,7 @@ from typing import Union, Tuple
 
 import math
 import torch
-from torch import nn
-from torch.optim import Adam
+from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision import utils as vutils
@@ -34,7 +33,7 @@ class Trainer:
             batch_size: int = 128,
             gradient_accumulate_every: int = 1,
             lr: float = 1e-4,
-            betas: Tuple[float, float] = (0.9, 0.99),
+            betas: Tuple[float, float] = (0.9, 0.999),
             num_steps: int = 100000,
             max_grad_norm: float = 1.0,
             val: bool = False,
@@ -55,7 +54,7 @@ class Trainer:
             batch_size (int, optional): The batch size for training. Defaults to 128.
             gradient_accumulate_every (int, optional): Number of gradient accumulation steps. Defaults to 1.
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
-            betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.99).
+            betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.999).
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             val (bool, optional): Whether to use validation. Defaults to False.
@@ -88,6 +87,9 @@ class Trainer:
         self.save_weights_dir.mkdir(parents=True, exist_ok=True)
         self.device = select_device(device, self.batch_size)
 
+        # Step counter state
+        self.current_step = 0
+
         # Model
         self.model = model.to(self.device)
 
@@ -102,20 +104,18 @@ class Trainer:
             transforms.Resize(self.model.image_size),
             transforms.CenterCrop(self.model.image_size),
             transforms.RandomHorizontalFlip() if self.augment else transforms.Lambda(lambda x: x),
-            transforms.ToTensor()
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
         ])
         self.dataset = BaseImageFolder(self.root, transform)
         data_loader = DataLoader(self.dataset, batch_size, True, num_workers=8, pin_memory=True, persistent_workers=True)
         self.data_loader = cycle_data_loader(data_loader)
 
         # Optimizer
-        self.optimizer = Adam(self.model.parameters(), lr, betas)
+        self.optimizer = optim.Adam(self.model.parameters(), lr, betas)
 
         # Resume
         self.resume_training()
-
-        # Step counter state
-        self.current_step = 0
 
         # Metric computation
         self.inception_score = None
@@ -128,7 +128,7 @@ class Trainer:
             self.best_fid_score = 1e10
             self.fid_metrics = FIDMetrics(
                 self.data_loader,
-                self.batch_size,
+                self.batch_size * 2,
                 self.ema.ema,
                 dataset_stat_path=self.fid_stat_path,
                 num_samples=self.num_fid_samples,
