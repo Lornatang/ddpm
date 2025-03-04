@@ -3,7 +3,7 @@ from ddpm.engine.trainer import Trainer
 from ddpm.models.gaussian_diffusion import GaussianDiffusion
 from ddpm.models.unet import UNet
 
-model = UNet(128, channels_multipliers=(1, 2, 2, 2))
+model = UNet(128, channels_multipliers=(1, 2, 2, 2), flash=True)
 diffusion_model = GaussianDiffusion(model, 256, 1000, sampling_time_steps=250)
 
 trainer = Trainer(
