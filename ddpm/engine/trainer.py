@@ -42,7 +42,7 @@ class Trainer:
             num_steps: int = 100000,
             max_grad_norm: float = 1.0,
             val: bool = False,
-            num_samples: int = 16,
+            num_samples: int = 64,
             num_fid_samples: int = 50000,
             fid_stat_path: Union[Path, str] = "./datasets/stats/train.npz",
             save_and_sample_every: int = 1000,
@@ -64,7 +64,7 @@ class Trainer:
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
             val (bool, optional): Whether to use validation. Defaults to False.
-            num_samples (int, optional): Number of samples to generate. Defaults to 16.
+            num_samples (int, optional): Number of samples to generate. Defaults to 64.
             fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/stats/train.npz``.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.

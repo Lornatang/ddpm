@@ -26,8 +26,8 @@ class Validator:
             self,
             model_weights_path: Union[Path, str],
             root: Union[Path, str],
-            batch_size: int = 128,
-            num_samples: int = 8,
+            batch_size: int = 256,
+            num_samples: int = 16,
             num_fid_samples: int = 50000,
             fid_stat_path: Union[Path, str] = "./datasets/stats/val.npz",
             save_dir: Union[Path, str] = "./results/val",
@@ -38,8 +38,8 @@ class Validator:
         Args:
             model_weights_path (Union[Path, str]): Path to the pre-trained model weights.
             root (Union[Path, str]): Root directory containing the dataset.
-            batch_size (int, optional): Batch size for validation. Defaults to 128.
-            num_samples (int, optional): Number of samples to generate for evaluation. Defaults to 8.
+            batch_size (int, optional): Batch size for validation. Defaults to 256.
+            num_samples (int, optional): Number of samples to generate for evaluation. Defaults to 16.
             num_fid_samples (int, optional): Number of samples to use for FID calculation. Defaults to 50000.
             fid_stat_path (Union[Path, str], optional): Path to the FID statistics. Defaults to './datasets/stats/train.npz'.
             save_dir (Union[Path, str], optional): Directory to save the validation results. Defaults to './results/val'.
