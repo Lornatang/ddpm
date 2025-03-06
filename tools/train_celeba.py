@@ -21,9 +21,9 @@ trainer = Trainer(
     val=False,
     num_samples=16,
     num_fid_samples=50000,
-    fid_stat_path="./datasets/stats/celeba_train.npz",
+    fid_stat_path="./datasets/stats/celeba_train_r256.npz",
     save_and_sample_every=10000,
-    save_dir=f"./results/train/celeba-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    save_dir=f"./results/train/celeba-r256-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     device="0",
     seed=0,
 )
