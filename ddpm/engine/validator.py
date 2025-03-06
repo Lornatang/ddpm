@@ -1,13 +1,12 @@
 # Copyright (c) Lornatang. All rights reserved.
 import uuid
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Union
 
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision import utils as vutils
-from tqdm import tqdm
 
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
@@ -27,7 +26,6 @@ class Validator:
             model_weights_path: Union[Path, str],
             root: Union[Path, str],
             batch_size: int = 256,
-            num_samples: int = 16,
             num_fid_samples: int = 50000,
             fid_stat_path: Union[Path, str] = "./datasets/stats/val.npz",
             save_dir: Union[Path, str] = "./results/val",
@@ -39,7 +37,6 @@ class Validator:
             model_weights_path (Union[Path, str]): Path to the pre-trained model weights.
             root (Union[Path, str]): Root directory containing the dataset.
             batch_size (int, optional): Batch size for validation. Defaults to 256.
-            num_samples (int, optional): Number of samples to generate for evaluation. Defaults to 16.
             num_fid_samples (int, optional): Number of samples to use for FID calculation. Defaults to 50000.
             fid_stat_path (Union[Path, str], optional): Path to the FID statistics. Defaults to './datasets/stats/train.npz'.
             save_dir (Union[Path, str], optional): Directory to save the validation results. Defaults to './results/val'.
@@ -48,7 +45,6 @@ class Validator:
         self.model_weights_path = model_weights_path
         self.root = root
         self.batch_size = batch_size
-        self.num_samples = num_samples
         self.num_fid_samples = num_fid_samples
         self.fid_stat_path = fid_stat_path
         self.save_dir = Path(save_dir)
@@ -86,9 +82,10 @@ class Validator:
             float: The FID score of the model on the validation dataset.
         """
         # Save samples
+        LOGGER.info(f"Saving {self.batch_size} samples...")
         with torch.no_grad():
-            for _ in tqdm(range(self.num_samples), desc="Saving samples", unit="sample"):
-                sample = self.model.sample(batch_size=1)
+            samples = self.model.sample(batch_size=self.batch_size)
+            for sample in samples:
                 vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
 
         # Calculate metrics
