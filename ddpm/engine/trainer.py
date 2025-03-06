@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
-from ddpm.evaluation.fid import FIDMetrics
+from ddpm.evaluation.fid_metrics import FIDMetrics
 from ddpm.utils.checkpoint import convert_optimizer_state_dict_to_half, load_checkpoint
 from ddpm.utils.ema import ModelEMA
 from ddpm.utils.envs import LOCAL_RANK, RANK, set_seed_everything, unset_deterministic
@@ -117,11 +117,7 @@ class Trainer:
 
         # Metric computation
         self.fid_metrics = None
-        self.inception_score = None
         self.fid_score = None
-        self.best_inception_score = None
-        self.best_fid_score = None
-        self.best_inception_score = 0
         self.best_fid_score = 1e10
 
     def optimizer_step(self) -> None:
@@ -141,28 +137,21 @@ class Trainer:
             return
 
         _, checkpoint = load_checkpoint(self.save_weights_dir.joinpath("last.pkl"), self.device)
-        best_inception_score = 0
-        best_fid_score = 10e0
-        current_step = checkpoint.get("step", -1) + 1
+        self.current_step = checkpoint.get("step", -1) + 1
 
         if checkpoint.get("optimizer", None) is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])  # optimizer
-            best_inception_score = checkpoint["best_inception_score"]
-            best_fid_score = checkpoint["best_fid_score"]
+            self.best_fid_score = checkpoint["best_fid_score"]
 
         if self.ema and checkpoint.get("ema"):
             self.ema.ema.load_state_dict(checkpoint["ema"].float().state_dict())  # EMA
             self.ema.updates = checkpoint["updates"]
 
-        assert current_step > 0, f"Start a new training without resuming"
-        LOGGER.info(f"Resuming training from epoch {current_step + 1} to {self.num_steps} total steps")
-        if self.num_steps < current_step:
-            LOGGER.info(f"This model has been trained for {current_step} steps. Fine-tuning for {self.num_steps} more steps.")
-            self.num_steps += current_step  # finetune additional steps
-
-        self.best_inception_score = best_inception_score
-        self.best_fid_score = best_fid_score
-        self.current_step = current_step
+        assert self.current_step > 0, f"Start a new training without resuming"
+        LOGGER.info(f"Resuming training from epoch {self.current_step + 1} to {self.num_steps} total steps")
+        if self.num_steps < self.current_step:
+            LOGGER.info(f"This model has been trained for {self.current_step} steps. Fine-tuning for {self.num_steps} more steps.")
+            self.num_steps += self.current_step  # finetune additional steps
 
     def get_validater(self) -> FIDMetrics:
         return FIDMetrics(
@@ -292,8 +281,8 @@ class Trainer:
 
                         if self.val:
                             # Calculate Inception Score and FID
-                            self.inception_score, self.fid_score = self.fid_metrics.calculate()
-                            LOGGER.info(f"Inception score: {self.inception_score:.2f}, FID score: {self.fid_score:.2f}")
+                            self.fid_score = self.fid_metrics.calculate()
+                            LOGGER.info(f"FID score: {self.fid_score:.2f}")
 
                         # Save model
                         self.save_model()
@@ -309,7 +298,6 @@ class Trainer:
         torch.save(
             {
                 "step": self.current_step,
-                "best_inception_score": self.best_inception_score,
                 "best_fid_score": self.best_fid_score,
                 "model": None,  # resume and final checkpoints derive from EMA
                 "ema": deepcopy(self.ema.ema).half(),
@@ -323,8 +311,4 @@ class Trainer:
         if self.val:
             if self.best_fid_score > self.fid_score:
                 self.best_fid_score = self.fid_score
-                shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "best_fid.pkl"))
-
-            if self.best_inception_score < self.inception_score:
-                self.best_inception_score = self.inception_score
-                shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "best_is.pkl"))
+                shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "best.pkl"))

@@ -1,2 +1,2 @@
 # Copyright (c) Lornatang. All rights reserved.
-from .fid import FIDMetrics
+from .fid_metrics import FIDMetrics

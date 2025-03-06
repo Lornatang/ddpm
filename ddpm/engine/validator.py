@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from ddpm.data.base import BaseImageFolder
 from ddpm.data.utils import cycle_data_loader
-from ddpm.evaluation.fid import FIDMetrics
+from ddpm.evaluation.fid_metrics import FIDMetrics
 from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.events import LOGGER
 from ddpm.utils.torch_utils import select_device
@@ -79,11 +79,11 @@ class Validator:
             device=self.device,
         )
 
-    def validate(self) -> Tuple[float, float]:
-        """Perform model evaluation and calculate Inception score and FID score.
+    def validate(self) -> float:
+        """Perform model evaluation and calculate FID score.
 
         Returns:
-            Tuple[float, float]: The Inception score and FID score of the model on the validation dataset.
+            float: The FID score of the model on the validation dataset.
         """
         # Save samples
         with torch.no_grad():
@@ -92,7 +92,7 @@ class Validator:
                 vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
 
         # Calculate metrics
-        inception_score, fid_score = self.fid_metrics.calculate()
-        LOGGER.info(f"Inception score: {inception_score:.2f}, FID score: {fid_score:.2f}")
+        fid_score = self.fid_metrics.calculate()
+        LOGGER.info(f"FID score: {fid_score:.2f}")
 
-        return inception_score, fid_score
+        return fid_score

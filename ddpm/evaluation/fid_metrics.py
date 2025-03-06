@@ -1,6 +1,6 @@
 # Copyright (c) Lornatang. All rights reserved.
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Union
 
 import math
 import numpy as np
@@ -116,36 +116,22 @@ class FIDMetrics:
         self.dataset_stat_loaded = True
 
     @torch.inference_mode()
-    def calculate(self) -> Tuple[float, float]:
-        """Calculate Inception score and FID score.
+    def calculate(self) -> float:
+        """Calculate FID score.
 
         Returns:
-            Tuple[float, float]: Inception score, FID score.
+            float: FID score.
         """
         if not self.dataset_stat_loaded:
             self.load_dataset_stat()
 
         self.model.eval()
         batch_size_list = num_to_groups(self.num_samples, self.batch_size)
-        stacked_fake_logits = []
         stacked_fake_features = []
         for batch_size in tqdm(batch_size_list, desc="Calculate metrics"):
             fake_samples = self.model.sample(batch_size=batch_size)
-            fake_logits = self.calculate_inception_logits(fake_samples)
             fake_features = self.calculate_inception_features(fake_samples)
-            stacked_fake_logits.append(fake_logits)
             stacked_fake_features.append(fake_features)
-
-        # Calculate Inception Score
-        stacked_fake_logits = torch.cat(stacked_fake_logits, dim=0).cpu().numpy()
-        # Calculate the probabilities
-        p_y = np.exp(stacked_fake_logits)  # Convert logits to probabilities
-        p_y /= p_y.sum(axis=1, keepdims=True)  # Normalize to get the probability distribution
-        # Compute the marginal p(y)
-        p_y_mean = np.mean(p_y, axis=0)
-        # Calculate the Inception Score using the formula
-        kl_divergence = p_y * (np.log(p_y + 1e-16) - np.log(p_y_mean + 1e-16))
-        inception_score = np.exp(np.mean(np.sum(kl_divergence, axis=1)))
 
         # Calculate FID Score
         stacked_fake_features = torch.cat(stacked_fake_features, dim=0).cpu().numpy()
@@ -153,4 +139,4 @@ class FIDMetrics:
         s1 = np.cov(stacked_fake_features, rowvar=False)
         fid_score = calculate_frechet_distance(m1, s1, self.m2, self.s2)
 
-        return inception_score, fid_score
+        return fid_score
