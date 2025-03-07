@@ -140,12 +140,10 @@ class Trainer:
         self.current_step = checkpoint.get("step", -1) + 1
 
         if checkpoint.get("optimizer", None) is not None:
-            print("ok1")
             self.optimizer.load_state_dict(checkpoint["optimizer"])  # optimizer
             self.best_fid_score = checkpoint["best_fid_score"]
 
         if self.ema and checkpoint.get("ema"):
-            print("ok2")
             self.ema.ema.load_state_dict(checkpoint["ema"].float().state_dict())  # EMA
             self.ema.updates = checkpoint["updates"]
 
