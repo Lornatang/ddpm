@@ -12,6 +12,7 @@ trainer = Trainer(
     diffusion_model,
     "/mnt/data/larry/datasets/open_data/celeba/img_align_celeba",
     False,
+    resume=False,
     batch_size=64,
     gradient_accumulate_every=1,
     lr=2e-5,

@@ -12,6 +12,7 @@ trainer = Trainer(
     diffusion_model,
     "./datasets/cifar10/train",
     True,
+    resume=False,
     batch_size=128,
     gradient_accumulate_every=1,
     lr=2e-4,
