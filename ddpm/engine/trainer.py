@@ -142,7 +142,7 @@ class Trainer:
             return
 
         _, checkpoint = load_checkpoint(self.resume, self.device)
-        self.current_step = checkpoint.get("step", -1) + 1
+        self.current_step = checkpoint.get("step", -1)
 
         if checkpoint.get("optimizer", None) is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])  # optimizer
