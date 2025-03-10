@@ -96,13 +96,18 @@ class Trainer:
         set_seed_everything(seed + 1 + RANK)
 
         # Create save directories
-        self.save_dir = Path(save_dir)
-        self.save_samples_dir = self.save_dir.joinpath("samples")
-        self.save_weights_dir = self.save_dir.joinpath("weights")
-        if RANK in {-1, 0}:
-            self.save_samples_dir.mkdir(parents=True, exist_ok=True)
-            self.save_weights_dir.mkdir(parents=True, exist_ok=True)
-            save_yaml(Path(self.save_dir, "opts.yaml"), vars(self))
+        if not self.resume:
+            self.save_dir = Path(save_dir)
+            self.save_samples_dir = self.save_dir.joinpath("samples")
+            self.save_weights_dir = self.save_dir.joinpath("weights")
+            if RANK in {-1, 0}:
+                self.save_samples_dir.mkdir(parents=True, exist_ok=True)
+                self.save_weights_dir.mkdir(parents=True, exist_ok=True)
+                save_yaml(Path(self.save_dir, "opts.yaml"), vars(self))
+        else:
+            self.save_dir = Path(self.resume).parent.parent
+            self.save_samples_dir = self.save_dir.joinpath("samples")
+            self.save_weights_dir = self.save_dir.joinpath("weights")
 
         # Step counter state
         self.current_step = 0
@@ -136,7 +141,7 @@ class Trainer:
         if not self.resume:
             return
 
-        _, checkpoint = load_checkpoint(Path(self.save_weights_dir).joinpath("last.pkl"), self.device)
+        _, checkpoint = load_checkpoint(self.resume, self.device)
         self.current_step = checkpoint.get("step", -1) + 1
 
         if checkpoint.get("optimizer", None) is not None:
