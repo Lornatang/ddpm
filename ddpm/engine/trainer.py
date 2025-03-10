@@ -33,7 +33,7 @@ class Trainer:
             model: torch.nn.Module,
             root: Union[Path, str],
             augment: bool = False,
-            resume: bool = False,
+            resume: Union[Path, str] = None,
             batch_size: int = 128,
             num_workers: int = 8,
             gradient_accumulate_every: int = 1,
@@ -55,22 +55,22 @@ class Trainer:
         Args:
             model (torch.nn.Module): The diffusion model to be trained.
             root (Union[Path, str]): The root directory for the dataset.
-            augment (bool, optional): Whether to apply data augmentation. Defaults to False.
-            resume (bool, optional): Whether to resume training. Defaults to False.
+            augment (bool, optional): Whether to apply data augmentation. Defaults to ``False``.
+            resume (Union[Path, str], optional): Whether to resume training. Defaults to ``None``.
             batch_size (int, optional): The batch size for training. Defaults to 128.
             gradient_accumulate_every (int, optional): Number of gradient accumulation steps. Defaults to 1.
             lr (float, optional): Learning rate for the optimizer. Defaults to 1e-4.
             betas (Tuple[float, float], optional): Betas for the Adam optimizer. Defaults to (0.9, 0.999).
             num_steps (int, optional): Total number of training steps. Defaults to 100000.
             max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
-            val (bool, optional): Whether to use validation. Defaults to False.
+            val (bool, optional): Whether to use validation. Defaults to ``False``.
             num_samples (int, optional): Number of samples to generate. Defaults to 64.
             fid_stat_path (Union[Path, str], optional): Path to the dataset statistics. Defaults to ``./datasets/stats/train.npz``.
             num_fid_samples (int, optional): Number of samples for FID evaluation. Defaults to 50000.
             save_and_sample_every (int, optional): Frequency of saving and sampling. Defaults to 1000.
-            save_dir (Union[Path, str], optional): Directory to save results. Defaults to "./results/train".
-            device (str, optional): Device to use. Defaults to "0".
-            seed (int, optional): Random seed. Defaults to 0.
+            save_dir (Union[Path, str], optional): Directory to save results. Defaults to ``./results/train``.
+            device (str, optional): Device to use. Defaults to ``0``.
+            seed (int, optional): Random seed. Defaults to ``0``.
         """
         super().__init__()
         self.root = root
