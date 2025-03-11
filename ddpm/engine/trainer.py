@@ -180,6 +180,20 @@ class Trainer:
 
         self._do_train(world_size)
 
+    def _get_memory(self, fraction: bool = False):
+        memory, total = 0, 0
+        if self.device.type == "mps":
+            memory = torch.mps.driver_allocated_memory()
+            if fraction:
+                total = torch.mps.get_mem_info()[0]
+        elif self.device.type == "cpu":
+            pass
+        else:
+            memory = torch.cuda.memory_reserved()
+            if fraction:
+                total = torch.cuda.get_device_properties(self.device).total_memory
+        return ((memory / total) if total > 0 else 0) if fraction else (memory / 2 ** 30)
+
     def _clear_memory(self):
         gc.collect()
         if self.device.type == "mps":
@@ -292,8 +306,10 @@ class Trainer:
                         # Save model
                         self.save_model()
 
-        # End
-        if RANK in {-1, 0}:
+                # End while
+                if self._get_memory(fraction=True) > 0.9:
+                    self._clear_memory()
+            # End
             self._clear_memory()
             unset_deterministic()
 
