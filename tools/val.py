@@ -4,7 +4,7 @@ from datetime import datetime
 from ddpm.engine.validator import Validator
 
 validator = Validator(
-    "./results/train/cifar10/weights/best.pkl",
+    "./results/train/cifar10/weights/last.pkl",
     "./datasets/cifar10/train",
     256,
     num_fid_samples=50000,
