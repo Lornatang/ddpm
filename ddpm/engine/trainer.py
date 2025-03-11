@@ -5,7 +5,7 @@ import shutil
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import math
 import torch
@@ -135,11 +135,9 @@ class Trainer:
         if self.ema:
             self.ema.update(self.model)
 
-    def resume_training(self) -> None:
-        """Resume training from a checkpoint."""
+    def resume_training(self, checkpoint: Dict) -> None:
         if not self.resume:
             return
-        _, checkpoint = load_checkpoint(self.resume, self.device)
         self.current_step = checkpoint.get("step", -1)
         if checkpoint.get("optimizer", None) is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])  # optimizer
@@ -196,29 +194,6 @@ class Trainer:
                 self.best_fid_score = self.fid_score
                 shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "best.pkl"))
 
-    def _get_memory(self, fraction: bool = False):
-        memory, total = 0, 0
-        if self.device.type == "mps":
-            memory = torch.mps.driver_allocated_memory()
-            if fraction:
-                total = torch.mps.get_mem_info()[0]
-        elif self.device.type == "cpu":
-            pass
-        else:
-            memory = torch.cuda.memory_reserved()
-            if fraction:
-                total = torch.cuda.get_device_properties(self.device).total_memory
-        return ((memory / total) if total > 0 else 0) if fraction else (memory / 2 ** 30)
-
-    def _clear_memory(self):
-        gc.collect()
-        if self.device.type == "mps":
-            torch.mps.empty_cache()
-        elif self.device.type == "cpu":
-            return
-        else:
-            torch.cuda.empty_cache()
-
     def _setup_ddp(self, world_size: int = 1) -> None:
         torch.cuda.set_device(RANK)
         self.device = torch.device("cuda", RANK)
@@ -232,6 +207,11 @@ class Trainer:
 
     def _setup_train(self, world_size: int) -> None:
         # Model
+        checkpoint = None
+        if self.resume:
+            _, checkpoint = load_checkpoint(self.resume, self.device)
+            state_dict = checkpoint.get("ema").float().state_dict() or checkpoint["model"].float().state_dict()
+            self.model.load_state_dict(state_dict)
         self.model = self.model.to(self.device)
 
         # AMP
@@ -265,7 +245,7 @@ class Trainer:
         self.optimizer = optim.Adam(self.model.parameters(), self.lr, self.betas)
 
         # Resume
-        self.resume_training()
+        self.resume_training(checkpoint)
 
     def _do_train(self, world_size: int = 1) -> None:
         if world_size > 1:
@@ -332,3 +312,26 @@ class Trainer:
         # End
         self._clear_memory()
         unset_deterministic()
+
+    def _get_memory(self, fraction: bool = False):
+        memory, total = 0, 0
+        if self.device.type == "mps":
+            memory = torch.mps.driver_allocated_memory()
+            if fraction:
+                total = torch.mps.get_mem_info()[0]
+        elif self.device.type == "cpu":
+            pass
+        else:
+            memory = torch.cuda.memory_reserved()
+            if fraction:
+                total = torch.cuda.get_device_properties(self.device).total_memory
+        return ((memory / total) if total > 0 else 0) if fraction else (memory / 2 ** 30)
+
+    def _clear_memory(self):
+        gc.collect()
+        if self.device.type == "mps":
+            torch.mps.empty_cache()
+        elif self.device.type == "cpu":
+            return
+        else:
+            torch.cuda.empty_cache()
