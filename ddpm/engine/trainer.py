@@ -5,7 +5,7 @@ import shutil
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 import math
 import torch
@@ -134,24 +134,19 @@ class Trainer:
         self.optimizer.zero_grad()
         if self.ema:
             self.ema.update(self.model)
-        self.current_step += 1
 
     def resume_training(self) -> None:
         """Resume training from a checkpoint."""
         if not self.resume:
             return
-
         _, checkpoint = load_checkpoint(self.resume, self.device)
         self.current_step = checkpoint.get("step", -1)
-
         if checkpoint.get("optimizer", None) is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])  # optimizer
             self.best_fid_score = checkpoint["best_fid_score"]
-
         if self.ema and checkpoint.get("ema"):
             self.ema.ema.load_state_dict(checkpoint["ema"].float().state_dict())  # EMA
             self.ema.updates = checkpoint["updates"]
-
         assert self.current_step > 0, f"Start a new training without resuming"
         LOGGER.info(f"Resuming training from epoch {self.current_step + 1} to {self.num_steps} total steps")
         if self.num_steps < self.current_step:
@@ -171,7 +166,7 @@ class Trainer:
     def train(self) -> None:
         if isinstance(self.device_type, str) and len(self.device_type):
             world_size = len(self.device_type.split(","))
-        elif isinstance(self.device_type, (tuple, list)):
+        elif isinstance(self.device_type, (Tuple, List)):
             world_size = len(self.device_type)
         elif torch.cuda.is_available():
             world_size = 1
@@ -179,6 +174,27 @@ class Trainer:
             world_size = 0
 
         self._do_train(world_size)
+
+    def save_model(self) -> None:
+        """Save model and ema model states to disk."""
+        model_weights_path = Path(self.save_weights_dir, f"{self.current_step}.pkl")
+        torch.save(
+            {
+                "step": self.current_step,
+                "best_fid_score": self.best_fid_score,
+                "model": None,  # resume and final checkpoints derive from EMA
+                "ema": deepcopy(self.ema.ema).half(),
+                "updates": self.ema.updates,
+                "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
+            },
+            model_weights_path,
+        )
+        shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "last.pkl"))
+
+        if self.val:
+            if self.best_fid_score > self.fid_score:
+                self.best_fid_score = self.fid_score
+                shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "best.pkl"))
 
     def _get_memory(self, fraction: bool = False):
         memory, total = 0, 0
@@ -256,6 +272,8 @@ class Trainer:
             self._setup_ddp(world_size)
         self._setup_train(world_size)
 
+        self.optimizer.zero_grad()
+
         with tqdm(total=self.num_steps, initial=self.current_step) as pbar:
             while self.current_step < self.num_steps:
                 self.model.train()
@@ -277,6 +295,8 @@ class Trainer:
 
                 # Update optimizer
                 self.optimizer_step()
+
+                self.current_step += 1
 
                 # Log and save
                 if RANK in {-1, 0}:
@@ -306,30 +326,9 @@ class Trainer:
                         # Save model
                         self.save_model()
 
-                # End while
-                if self._get_memory(fraction=True) > 0.9:
-                    self._clear_memory()
-            # End
-            self._clear_memory()
-            unset_deterministic()
-
-    def save_model(self) -> None:
-        """Save model and ema model states to disk."""
-        model_weights_path = Path(self.save_weights_dir, f"{self.current_step}.pkl")
-        torch.save(
-            {
-                "step": self.current_step,
-                "best_fid_score": self.best_fid_score,
-                "model": None,  # resume and final checkpoints derive from EMA
-                "ema": deepcopy(self.ema.ema).half(),
-                "updates": self.ema.updates,
-                "optimizer": convert_optimizer_state_dict_to_half(deepcopy(self.optimizer.state_dict())),
-            },
-            model_weights_path,
-        )
-        shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "last.pkl"))
-
-        if self.val:
-            if self.best_fid_score > self.fid_score:
-                self.best_fid_score = self.fid_score
-                shutil.copyfile(model_weights_path, Path(self.save_weights_dir, "best.pkl"))
+            # End while
+            if self._get_memory(fraction=True) > 0.9:
+                self._clear_memory()
+        # End
+        self._clear_memory()
+        unset_deterministic()

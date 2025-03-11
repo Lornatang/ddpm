@@ -40,7 +40,7 @@ def load_checkpoint(weights_path: Union[str, Path], device: Union[str, torch.dev
         Tuple (Any, Any): Returns the loaded model and the complete checkpoint dictionary.
     """
     # Load the checkpoint
-    checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(weights_path, map_location=torch.device("cpu"), weights_only=False)
 
     # Get the model
     model = (checkpoint.get("ema") or checkpoint["model"]).to(device).float()
