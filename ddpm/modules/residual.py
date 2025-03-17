@@ -1,11 +1,9 @@
 # Copyright (c) Lornatang. All rights reserved.
-from typing import Optional, Tuple, Union
-
 import torch
-from einops import rearrange
 from torch import nn
 
-from .base import Block
+from .activation import Swish
+from .attention import Attention
 
 __all__ = [
     "Residual",
@@ -13,45 +11,63 @@ __all__ = [
 
 
 class Residual(nn.Module):
-    def __init__(self, dim: int, dim_out: int, *, time_embedding_dim: Optional[int] = None, dropout: float = 0.) -> None:
-        """Initializes the Residual module.
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            time_dim: int,
+            attn: bool = False,
+            dropout: float = 0,
+    ) -> None:
+        """Initializes the Residual block.
 
         Args:
-            dim (int): Dimension of the input.
-            dim_out (int): Dimension of the output.
-            time_embedding_dim (Optional[int], optional): Dimension of the time embedding. Defaults to None.
+            in_channels (int): Number of input channels.
+            out_channels (int): Number of output channels.
+            time_dim (int): Dimension of the time embedding.
+            attn (bool, optional): Whether to use attention. Defaults to False.
             dropout (float, optional): Dropout rate. Defaults to 0.
         """
         super().__init__()
-        self.mlp: Optional[nn.Sequential] = None
-        if time_embedding_dim is not None:
-            self.mlp = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(time_embedding_dim, dim_out * 2)
-            )
+        self.block1 = nn.Sequential(
+            nn.GroupNorm(32, in_channels),
+            Swish(True),
+            nn.Conv2d(in_channels, out_channels, (3, 3), stride=(1, 1), padding=(1, 1)),
+        )
+        self.time_embedding_proj = nn.Sequential(
+            Swish(True),
+            nn.Linear(time_dim, out_channels),
+        )
+        self.block2 = nn.Sequential(
+            nn.GroupNorm(32, out_channels),
+            Swish(True),
+            nn.Dropout(dropout, True),
+            nn.Conv2d(out_channels, out_channels, (3, 3), stride=(1, 1), padding=(1, 1)),
+        )
+        self.shortcut = nn.Conv2d(in_channels, out_channels, (1, 1), stride=(1, 1), padding=(0, 0)) if in_channels != out_channels else nn.Identity()
+        self.attn = Attention(out_channels) if attn else nn.Identity()
 
-        self.block1: Block = Block(dim, dim_out, dropout=dropout)
-        self.block2: Block = Block(dim_out, dim_out)
-        self.res_conv: Union[nn.Conv2d, nn.Identity] = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        for module in self.modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+        nn.init.xavier_uniform_(self.block2[-1].weight, gain=1e-5)
 
-    def forward(self, x: torch.Tensor, time_embedding: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, time_embedding: torch.Tensor) -> torch.Tensor:
         """Forward pass for the Residual module.
 
         Args:
             x (torch.Tensor): Input tensor.
-            time_embedding (Optional[torch.Tensor], optional): Time embedding tensor. Defaults to None.
+            time_embedding (Optional[torch.Tensor]): Time embedding tensor.
 
         Returns:
             torch.Tensor: Output tensor after applying the residual block operations.
         """
-        scale_shift: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-        if self.mlp is not None and time_embedding is not None:
-            time_embedding = rearrange(time_embedding, "b c -> b c")
-            time_embedding = self.mlp(time_embedding)
-            time_embedding = rearrange(time_embedding, "b c -> b c 1 1")
-            scale_shift = time_embedding.chunk(2, dim=1)
+        out = self.block1(x)
+        out += self.time_embedding_proj(time_embedding)[:, :, None, None]
+        out = self.block2(out)
 
-        h: torch.Tensor = self.block1(x, scale_shift=scale_shift)
-        h = self.block2(h)
+        out = out + self.shortcut(x)
+        out = self.attn(out)
 
-        return h + self.res_conv(x)
+        return out

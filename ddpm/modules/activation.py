@@ -1,31 +1,29 @@
 # Copyright (c) Lornatang. All rights reserved.
 import torch
 from torch import nn
-from torch.nn import functional as F_torch
 
 __all__ = [
-    "RMSNorm",
+    "Swish",
 ]
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int) -> None:
-        """Initialize the RMSNorm module.
+class Swish(nn.Module):
+    def __init__(self, inplace: bool = False):
+        """Swish activation function.
 
         Args:
-            dim (int): The dimension of the input tensor.
+            inplace (bool, optional): Whether to do the operation in-place. Defaults to False.
         """
         super().__init__()
-        self.scale = dim ** 0.5
-        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
+        self.inplace: bool = inplace
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass for the RMSNorm module.
+        """Forward method.
 
         Args:
-            x (torch.Tensor): The input tensor.
+            x (torch.Tensor): Input tensor.
 
         Returns:
-            torch.Tensor: The normalized and scaled tensor.
+            torch.Tensor: Output tensor.
         """
-        return F_torch.normalize(x, dim=1) * self.g * self.scale
+        return x * torch.sigmoid(x) if self.inplace else x * torch.sigmoid(x).clone()
