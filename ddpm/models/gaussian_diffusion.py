@@ -46,11 +46,8 @@ class GaussianDiffusion(nn.Module):
             immiscible (bool, optional): Whether to use immiscible diffusion. Defaults to False.
         """
         super().__init__()
-        assert not model.in_channels != model.out_dim, "model must have the same number of channels as out_dim"
-
         self.model = model
         self.in_channels = self.model.in_channels
-        self.self_condition = self.model.self_condition
 
         # Ensure image_size is a tuple of two integers
         if isinstance(image_size, int):
@@ -190,7 +187,7 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: int,
-            x_self_condition: Optional[torch.Tensor],
+            x_self_condition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample from the Gaussian diffusion process at a given time step.
 
@@ -228,11 +225,8 @@ class GaussianDiffusion(nn.Module):
 
         # Sampling loop over all time steps in reverse order
         for time_step in reversed(range(0, self.num_time_steps)):
-            # Conditional input for self-conditioning
-            self_condition = x_start if self.self_condition else None
-
             # Perform a single step of sampling
-            image, x_start = self.p_sample(image, time_step, self_condition)
+            image, x_start = self.p_sample(image, time_step)
 
             # Append the current image to the list of images
             images.append(image)
@@ -271,12 +265,9 @@ class GaussianDiffusion(nn.Module):
         # Sampling loop over all time pairs
         for current_time, next_time in time_pairs:
             # Create a tensor with the current time step for all samples
-            time_cond = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
-            # Conditional input for self-conditioning
-            self_condition = x_start if self.self_condition else None
-
+            time_step = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
             # Predict the noise and reconstruct x_start
-            pred_noise, x_start, *_ = self.model_predictions(image, time_cond, self_condition, clip_x_start=True)
+            pred_noise, x_start, *_ = self.model_predictions(image, time_step, clip_x_start=True)
 
             # If the next time step is the final step, set the image to x_start
             if next_time < 0:
@@ -469,14 +460,9 @@ class GaussianDiffusion(nn.Module):
 
         # Noise sample
         x_noisy = self.q_sample(x_start=x_start, time_step=time_step, noise=noise)
-        x_self_condition = None
-        if self.self_condition and random.random() < 0.5:
-            with torch.no_grad():
-                x_self_condition = self.model_predictions(x_noisy, time_step).pred_x_start
-                x_self_condition.detach_()
 
         # Predict and take gradient step
-        model_output = self.model(x_noisy, time_step, x_self_condition)
+        model_output = self.model(x_noisy, time_step)
         predicted_v = self.prediction_latent_var(x_start, time_step, noise)
 
         loss = F_torch.mse_loss(model_output, predicted_v, reduction="none")
@@ -516,7 +502,6 @@ class GaussianDiffusion(nn.Module):
         x_start = None
         # Reverse diffusion process to generate the interpolated image
         for i in reversed(range(0, time_step)):
-            self_condition = x_start if self.self_condition else None
-            image, x_start = self.p_sample(image, i, self_condition)
+            image, x_start = self.p_sample(image, i)
 
         return image

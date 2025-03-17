@@ -38,6 +38,8 @@ class UNet(nn.Module):
             dropout (float, optional): Dropout rate. Defaults to 0.
         """
         super().__init__()
+        self.in_channels = in_channels
+
         if attn_multipliers is None:
             attn_multipliers = [1]
         assert all([i < len(channels_multipliers) for i in attn_multipliers])
