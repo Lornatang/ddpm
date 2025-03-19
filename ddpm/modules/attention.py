@@ -57,9 +57,9 @@ class Attention(nn.Module):
 
         # 3. Reshape for matrix operations
         # Flatten spatial dimensions (H,W) -> (N=H*W)
-        q = q.permute(0, 2, 3, 1).view(batch_size, height * width, channels)  # (B, N, C)
-        k = k.view(batch_size, channels, height * width)  # (B, C, N)
-        v = v.permute(0, 2, 3, 1).view(batch_size, height * width, channels)  # (B, N, C)
+        q = q.permute(0, 2, 3, 1).view(batch_size, height * width, channels).contiguous()  # (B, N, C)
+        k = k.view(batch_size, channels, height * width).contiguous()  # (B, C, N)
+        v = v.permute(0, 2, 3, 1).view(batch_size, height * width, channels).contiguous()  # (B, N, C)
 
         # 4. Compute attention weights (Q*K^T scaled by 1/sqrt(d))
         attn_logits = torch.bmm(q, k) * (channels ** -0.5)  # (B, N, N)
@@ -71,7 +71,7 @@ class Attention(nn.Module):
         h = torch.bmm(attn_weights, v)  # (B, N, C)
 
         # 7. Reshape back to spatial dimensions
-        h = h.view(batch_size, height, width, channels).permute(0, 3, 1, 2)  # (B, C, H, W)
+        h = h.view(batch_size, height, width, channels).permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
 
         # 8. Final projection and residual connection
         h = self.proj(h)
