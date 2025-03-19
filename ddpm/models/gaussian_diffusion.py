@@ -1,5 +1,4 @@
 # Copyright (c) Lornatang. All rights reserved.
-import random
 from collections import namedtuple
 from typing import Any, Optional, Tuple, Union
 
@@ -159,7 +158,6 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: torch.Tensor,
-            x_self_condition: Optional[torch.Tensor] = None,
             clip_denoised: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute the mean and variance for the diffusion process.
@@ -167,14 +165,13 @@ class GaussianDiffusion(nn.Module):
         Args:
             x (torch.Tensor): The input tensor.
             time_step (torch.Tensor): The time steps tensor.
-            x_self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
             clip_denoised (bool, optional): Whether to clip the predicted x_start. Defaults to True.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: The model mean, posterior variance,
             posterior log variance, and predicted x_start tensors.
         """
-        preds = self.model_predictions(x, time_step, x_self_condition)
+        preds = self.model_predictions(x, time_step)
         x_start = preds.pred_x_start
 
         if clip_denoised:
@@ -187,20 +184,18 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: int,
-            x_self_condition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample from the Gaussian diffusion process at a given time step.
 
         Args:
             x (torch.Tensor): The input tensor.
             time_step (int): The current time step.
-            x_self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: The predicted image tensor and the predicted starting image tensor.
         """
         batched_times = torch.full((x.shape[0],), time_step, device=self.betas.device, dtype=torch.long)
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x, batched_times, x_self_condition, clip_denoised=True)
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x, batched_times, clip_denoised=True)
         noise = torch.randn_like(x) if time_step > 0 else 0.  # no noise if t == 0
         pred_image = model_mean + (0.5 * model_log_variance).exp() * noise
 
@@ -408,7 +403,6 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: torch.Tensor,
-            self_condition: Optional[torch.Tensor] = None,
             clip_x_start: bool = False
     ) -> ModelPrediction:
         """Generate model predictions for the Gaussian Diffusion process.
@@ -416,13 +410,12 @@ class GaussianDiffusion(nn.Module):
         Args:
             x (torch.Tensor): The input tensor.
             time_step (torch.Tensor): The time steps tensor.
-            self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
             clip_x_start (bool, optional): Whether to clip the predicted x_start. Defaults to False.
 
         Returns:
             ModelPrediction: The predicted noise and x_start tensors.
         """
-        model_output = self.model(x, time_step, self_condition)
+        model_output = self.model(x, time_step)
 
         x_start = self.prediction_start_from_latent_var(x, time_step, model_output)
         if clip_x_start:
