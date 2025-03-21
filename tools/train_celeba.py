@@ -19,7 +19,7 @@ diffusion_model = GaussianDiffusion(model, 256, 1000, sampling_time_steps=250)
 
 trainer = Trainer(
     diffusion_model,
-    "/mnt/data/larry/datasets/open_data/celeba/img_align_celeba",
+    "./datasets/open_data/celeba/img_align_celeba",
     False,
     resume=None,
     batch_size=64,
