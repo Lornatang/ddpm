@@ -124,6 +124,9 @@ class GaussianDiffusion(nn.Module):
         # Randomly sample time steps for each image in the batch
         sample_time = torch.randint(0, self.num_time_steps, (batch_size,), device=image.device).long()
 
+        # Normalize the output to the range [-1, 1]
+        image = (image * 2.) - 1.
+
         # Compute the loss for the input batch of images
         out = self.p_losses(image, sample_time, *args, **kwargs)
 
@@ -228,6 +231,7 @@ class GaussianDiffusion(nn.Module):
 
         # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
+
         # Normalize the output to the range [0, 1]
         out = (out + 1.) * 0.5
 

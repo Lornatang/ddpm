@@ -231,7 +231,6 @@ class Trainer:
             transforms.CenterCrop(self.image_size),
             transforms.RandomHorizontalFlip() if self.augment else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
         ])
         dataset = BaseImageFolder(self.root, transform)
         data_loader = DataLoader(dataset, batch_size, True, num_workers=self.num_workers, pin_memory=True, persistent_workers=True)
