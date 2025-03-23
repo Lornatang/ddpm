@@ -1,32 +1,46 @@
 # Copyright (c) Lornatang. All rights reserved.
+from functools import partial
+
 import torch
+from einops import rearrange, repeat
 from torch import nn
 
-from torch.nn import functional as F_torch
+from .activation import RMSNorm
+from .attend import Attend
 
 __all__ = [
-    "Attention",
+    "Attention", "LinearAttention",
 ]
 
 
 class Attention(nn.Module):
-    def __init__(self, channels: int) -> None:
+    def __init__(
+            self,
+            dim: int,
+            heads: int = 4,
+            dim_head: int = 32,
+            num_mem_kv: int = 4,
+            flash: bool = False
+    ) -> None:
         """Initializes the Attention module.
 
         Args:
-            channels (int): Dimension of the input.
+            dim (int): Dimension of the input.
+            heads (int, optional): Number of attention heads. Defaults to 4.
+            dim_head (int, optional): Dimension of each attention head. Defaults to 32.
+            num_mem_kv (int, optional): Number of memory key-value pairs. Defaults to 4.
+            flash (bool, optional): Whether to use flash attention. Defaults to False.
         """
         super().__init__()
-        self.group_norm = nn.GroupNorm(32, channels)
-        self.proj_q = nn.Conv2d(channels, channels, (1, 1), stride=(1, 1), padding=(0, 0))
-        self.proj_k = nn.Conv2d(channels, channels, (1, 1), stride=(1, 1), padding=(0, 0))
-        self.proj_v = nn.Conv2d(channels, channels, (1, 1), stride=(1, 1), padding=(0, 0))
-        self.proj = nn.Conv2d(channels, channels, (1, 1), stride=(1, 1), padding=(0, 0))
+        self.heads: int = heads
+        hidden_dim = dim_head * heads
 
-        for module in [self.proj_q, self.proj_k, self.proj_v, self.proj]:
-            nn.init.xavier_uniform_(module.weight)
-            nn.init.zeros_(module.bias)
-        nn.init.xavier_uniform_(self.proj.weight, gain=1e-5)
+        self.norm: nn.Module = RMSNorm(dim)
+        self.attend: Attend = Attend(flash=flash)
+
+        self.mem_kv: nn.Parameter = nn.Parameter(torch.randn(2, heads, num_mem_kv, dim_head))
+        self.to_qkv: nn.Module = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
+        self.to_out: nn.Module = nn.Conv2d(hidden_dim, dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass for the Attention module.
@@ -36,47 +50,83 @@ class Attention(nn.Module):
 
         Returns:
             torch.Tensor: Output tensor after applying attention.
-
-        Notes:
-            Implements standard attention mechanism:
-                1. Compute Query/Key/Value projections
-                2. Calculate attention weights via Q*K^T
-                3. Apply softmax normalization
-                4. Aggregate values with attention weights
-                5. Final projection and residual connection[1,2]
         """
-        batch_size, channels, height, width = x.shape
+        b, c, h, w = x.shape
 
-        # 1. Feature normalization
-        h = self.group_norm(x)  # Stabilize feature magnitudes
+        x = self.norm(x)
 
-        # 2. Compute Q/K/V projections
-        q = self.proj_q(h)  # (B, C, H, W)
-        k = self.proj_k(h)  # (B, C, H, W)
-        v = self.proj_v(h)  # (B, C, H, W)
+        qkv = self.to_qkv(x).chunk(3, dim=1)
+        q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h (x y) c", h=self.heads), qkv)
 
-        # 3. Reshape for matrix operations
-        # Flatten spatial dimensions (H,W) -> (N=H*W)
-        q = q.permute(0, 2, 3, 1).view(batch_size, height * width, channels).contiguous()  # (B, N, C)
-        k = k.view(batch_size, channels, height * width).contiguous()  # (B, C, N)
-        v = v.permute(0, 2, 3, 1).view(batch_size, height * width, channels).contiguous()  # (B, N, C)
+        mk, mv = map(lambda t: repeat(t, "h n d -> b h n d", b=b), self.mem_kv)
+        k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
-        # 4. Compute attention weights (Q*K^T scaled by 1/sqrt(d))
-        attn_logits = torch.bmm(q, k) * (channels ** -0.5)  # (B, N, N)
+        out = self.attend(q, k, v)
+        out = rearrange(out, "b h (x y) d -> b (h d) x y", x=h, y=w)
+        out = self.to_out(out)
 
-        # 5. Apply softmax normalization
-        attn_weights = F_torch.softmax(attn_logits, dim=-1)  # (B, N, N)
+        return out
 
-        # 6. Attention-weighted value aggregation
-        h = torch.bmm(attn_weights, v)  # (B, N, C)
 
-        # 7. Reshape back to spatial dimensions
-        h = h.view(batch_size, height, width, channels).permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
+class LinearAttention(nn.Module):
+    def __init__(
+            self,
+            dim: int,
+            heads: int = 4,
+            dim_head: int = 32,
+            num_mem_kv: int = 4
+    ) -> None:
+        """Initializes the LinearAttention module.
 
-        # 8. Final projection and residual connection
-        h = self.proj(h)
+        Args:
+            dim (int): Dimension of the input.
+            heads (int, optional): Number of attention heads. Defaults to 4.
+            dim_head (int, optional): Dimension of each attention head. Defaults to 32.
+            num_mem_kv (int, optional): Number of memory key-value pairs. Defaults to 4.
+        """
+        super().__init__()
+        self.scale: float = dim_head ** -0.5
+        self.heads: int = heads
+        hidden_dim = dim_head * heads
 
-        # 9.Residual skip-connection
-        out = x + h
+        self.norm: nn.Module = RMSNorm(dim)
+
+        self.mem_kv: nn.Parameter = nn.Parameter(torch.randn(2, heads, dim_head, num_mem_kv))
+        self.to_qkv: nn.Module = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
+
+        self.to_out: nn.Module = nn.Sequential(
+            nn.Conv2d(hidden_dim, dim, 1, bias=False),
+            RMSNorm(dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for the LinearAttention module.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor after applying linear attention.
+        """
+        b, c, h, w = x.shape
+
+        x = self.norm(x)
+
+        qkv = self.to_qkv(x).chunk(3, dim=1)
+        q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h c (x y)", h=self.heads), qkv)
+
+        mk, mv = map(lambda t: repeat(t, "h c n -> b h c n", b=b), self.mem_kv)
+        k, v = map(partial(torch.cat, dim=-1), ((mk, k), (mv, v)))
+
+        q = q.softmax(dim=-2)
+        k = k.softmax(dim=-1)
+
+        q = q * self.scale
+
+        context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
+
+        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
+        out = rearrange(out, "b h c (x y) -> b (h c) x y", h=self.heads, x=h, y=w)
+        out = self.to_out(out)
 
         return out

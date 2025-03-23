@@ -1,13 +1,15 @@
 # Copyright (c) Lornatang. All rights reserved.
-from typing import List, Tuple
+from functools import partial
+from typing import Optional, Tuple
 
 import torch
 from torch import nn
 
-from ddpm.modules.activation import Swish
+from ddpm.modules.attention import Attention, LinearAttention
+from ddpm.modules.downsampling import Downsample
 from ddpm.modules.residual import Residual
-from ddpm.modules.sampling import Downsample, Upsample
-from ddpm.modules.time_embedding import TimeEmbedding
+from ddpm.modules.sinusoidal_pos_embedding import SinusoidalPosEmbedding
+from ddpm.modules.upsampling import Upsample
 
 __all__ = [
     "UNet",
@@ -17,121 +19,189 @@ __all__ = [
 class UNet(nn.Module):
     def __init__(
             self,
-            time_steps: int = 1000,
+            dim: int,
+            init_dim: Optional[int] = None,
+            out_dim: Optional[int] = None,
             in_channels: int = 3,
-            channels: int = 128,
             channels_multipliers: Tuple[int, ...] = (1, 2, 2, 2),
-            attn_multipliers: List[int] = None,
-            num_res_blocks: int = 2,
-            init_weights: bool = True,
-            dropout: float = 0,
+            self_condition: bool = False,
+            learned_variance: bool = False,
+            sinusoidal_pos_emb_theta: int = 10000,
+            dropout: float = 0.,
+            attn_dim_head: int = 32,
+            attn_heads: int = 4,
+            flash: bool = False,
     ) -> None:
         """Initializes the UNet module.
 
         Args:
-            time_steps (int, optional): Number of time steps. Defaults to 1000.
+            dim (int): Base dimension for the model.
+            init_dim (Optional[int], optional): Initial dimension for the first convolution. Defaults to None.
+            out_dim (Optional[int], optional): Output dimension. Defaults to None.
             in_channels (int): Number of input channels. Defaults to 3.
-            channels (int, optional): Number of channels. Defaults to 128.
             channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 2, 2).
-            attn_multipliers (List[int]): Multipliers for the attention. Defaults to ``None``.
-            num_res_blocks (int, optional): Number of residual blocks. Defaults to 2.
-            dropout (float, optional): Dropout rate. Defaults to 0.
+            self_condition (bool): Whether to use self-conditioning. Defaults to False.
+            learned_variance (bool): Whether to learn variance. Defaults to False.
+            sinusoidal_pos_emb_theta (int): Theta value for sinusoidal positional embedding. Defaults to 10000.
+            dropout (float): Dropout rate. Defaults to 0.
+            attn_dim_head (int): Dimension of each attention head. Defaults to 32.
+            attn_heads (int): Number of attention heads. Defaults to 4.
+            flash (bool): Whether to flash attention. Defaults to False.
         """
         super().__init__()
+        self.dim = dim
         self.in_channels = in_channels
+        self.self_condition = self_condition
 
-        if attn_multipliers is None:
-            attn_multipliers = [1]
-        assert all([i < len(channels_multipliers) for i in attn_multipliers])
+        in_channels = in_channels * (2 if self_condition else 1)
+        init_dim = dim if init_dim is None else init_dim
+        self.init_conv = nn.Conv2d(in_channels, init_dim, (7, 7), padding=(3, 3))
 
-        time_dim = channels * 4
-        self.time_embedding = TimeEmbedding(time_steps, channels, time_dim)
+        dim_list = [dim, *map(lambda m: dim * m, channels_multipliers)]
+        out_channel_list = list(zip(dim_list[:-1], dim_list[1:]))
 
-        self.head = nn.Conv2d(in_channels, channels, (3, 3), stride=(1, 1), padding=(1, 1))
-
-        self.down_sampling = nn.ModuleList()
-        channel_list = [channels]
-        current_channel = channels
-        for i, mult in enumerate(channels_multipliers):
-            out_channels = channels * mult
-            for _ in range(num_res_blocks):
-                self.down_sampling.append(
-                    Residual(
-                        current_channel,
-                        out_channels,
-                        time_dim,
-                        attn=(i in attn_multipliers),
-                        dropout=dropout,
-                    )
-                )
-                current_channel = out_channels
-                channel_list.append(current_channel)
-            if i != len(channels_multipliers) - 1:
-                self.down_sampling.append(Downsample(current_channel))
-                channel_list.append(current_channel)
-
-        self.residual_blocks = nn.ModuleList([
-            Residual(current_channel, current_channel, time_dim, attn=True, dropout=dropout),
-            Residual(current_channel, current_channel, time_dim, attn=False, dropout=dropout),
-        ])
-
-        self.up_sampling = nn.ModuleList([])
-        for i, mult in reversed(list(enumerate(channels_multipliers))):
-            out_channels = channels * mult
-            for _ in range(num_res_blocks + 1):
-                self.up_sampling.append(
-                    Residual(
-                        channel_list.pop() + current_channel,
-                        out_channels,
-                        time_dim,
-                        attn=(i in attn_multipliers),
-                        dropout=dropout,
-                    )
-                )
-                current_channel = out_channels
-            if i != 0:
-                self.up_sampling.append(Upsample(current_channel))
-        assert len(channel_list) == 0
-
-        self.tail = nn.Sequential(
-            nn.GroupNorm(32, current_channel),
-            Swish(True),
-            nn.Conv2d(current_channel, in_channels, (3, 3), stride=(1, 1), padding=(1, 1))
+        # time embedding
+        sinusoidal_pos_embedding = SinusoidalPosEmbedding(dim, sinusoidal_pos_emb_theta)
+        fourier_dim = dim
+        time_embedding_dim = dim * 4
+        self.time_mlp = nn.Sequential(
+            sinusoidal_pos_embedding,
+            nn.Linear(fourier_dim, time_embedding_dim),
+            nn.GELU(),
+            nn.Linear(time_embedding_dim, time_embedding_dim)
         )
 
-        if init_weights:
-            nn.init.xavier_uniform_(self.head.weight)
-            nn.init.zeros_(self.head.bias)
-            nn.init.xavier_uniform_(self.tail[-1].weight, gain=1e-5)
-            nn.init.zeros_(self.tail[-1].bias)
+        # attention
+        num_stages = len(channels_multipliers)
+        full_attn = (*((False,) * (num_stages - 1)), True)
+        attn_heads = ((attn_heads,) * num_stages)
+        attn_dim_head = ((attn_dim_head,) * num_stages)
+        assert len(full_attn) == len(channels_multipliers)
 
-    def forward(self, x: torch.Tensor, time_step: torch.Tensor) -> torch.Tensor:
+        # prepare blocks
+        attention_block = partial(Attention, flash=flash)
+        residual_block = partial(Residual, time_embedding_dim=time_embedding_dim, dropout=dropout)
+
+        # layers
+        self.down_sampling = nn.ModuleList([])
+        self.up_sampling = nn.ModuleList([])
+        num_resolutions = len(out_channel_list)
+
+        for i, (
+                (in_dim, out_dim),
+                layer_full_attn,
+                layer_attn_heads,
+                layer_attn_dim_head
+        ) in enumerate(
+            zip(
+                out_channel_list,
+                full_attn,
+                attn_heads,
+                attn_dim_head
+            )
+        ):
+            is_last = i >= (num_resolutions - 1)
+            attn_klass = attention_block if layer_full_attn else LinearAttention
+            self.down_sampling.append(nn.ModuleList([
+                residual_block(in_dim, in_dim),
+                residual_block(in_dim, in_dim),
+                attn_klass(in_dim, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
+                Downsample(in_dim, out_dim) if not is_last else nn.Conv2d(in_dim, out_dim, (3, 3), padding=(1, 1))
+            ]))
+
+        midden_dim = dim_list[-1]
+        self.mid_block1 = residual_block(midden_dim, midden_dim)
+        self.mid_attn = attention_block(midden_dim, heads=attn_heads[-1], dim_head=attn_dim_head[-1])
+        self.mid_block2 = residual_block(midden_dim, midden_dim)
+
+        for i, (
+                (in_dim, out_dim),
+                layer_full_attn,
+                layer_attn_heads,
+                layer_attn_dim_head
+        ) in enumerate(zip(*map(reversed, (out_channel_list, full_attn, attn_heads, attn_dim_head)))):
+            is_last = i == (len(out_channel_list) - 1)
+            attn_klass = attention_block if layer_full_attn else LinearAttention
+            self.up_sampling.append(nn.ModuleList([
+                residual_block(out_dim + in_dim, out_dim),
+                residual_block(out_dim + in_dim, out_dim),
+                attn_klass(out_dim, dim_head=layer_attn_dim_head, heads=layer_attn_heads),
+                Upsample(out_dim, in_dim) if not is_last else nn.Conv2d(out_dim, in_dim, (3, 3), padding=(1, 1))
+            ]))
+
+        default_out_dim = in_channels * (1 if not learned_variance else 2)
+        self.out_dim = out_dim if default_out_dim is None else default_out_dim
+
+        self.final_res_block = residual_block(init_dim * 2, init_dim)
+        self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
+
+    def forward(self, x: torch.Tensor, sample_time: torch.Tensor, self_conditioning_tensor: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Forward pass for the UNet module.
 
         Args:
             x (torch.Tensor): Input tensor.
-            time_step (torch.Tensor): Time embedding tensor.
+            sample_time (torch.Tensor): Time embedding tensor.
+            self_conditioning_tensor (Optional[torch.Tensor], optional): Self-conditioning tensor. Defaults to None.
 
         Returns:
             torch.Tensor: Output tensor after passing through the UNet.
         """
-        time_embedding = self.time_embedding(time_step)
-        x = self.head(x)
+        # Ensure input dimensions are divisible by the downsample factor
+        assert all(
+            [
+                (dimension % self.downsample_factor) == 0 for dimension in x.shape[-2:]
+            ]
+        ), f"your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet"
 
-        x_list = [x]
-        for layer in self.down_sampling:
-            x = layer(x, time_embedding)
-            x_list.append(x)
+        # Handle self-conditioning
+        if self.self_condition:
+            self_conditioning_tensor = torch.zeros_like(x) if self_conditioning_tensor is None else self_conditioning_tensor
+            x = torch.cat((self_conditioning_tensor, x), dim=1)
 
-        for layer in self.residual_blocks:
-            x = layer(x, time_embedding)
+        # Initial convolution
+        x = self.init_conv(x)
+        residual = x.clone()
 
-        for layer in self.up_sampling:
-            if isinstance(layer, Residual):
-                x = torch.cat([x, x_list.pop()], dim=1)
-            x = layer(x, time_embedding)
+        # Time embedding
+        time_embedding = self.time_mlp(sample_time)
 
-        x = self.tail(x)
-        assert len(x_list) == 0
+        hidden_states = []
+
+        # Downsampling path
+        for block1, block2, attention, downsample in self.down_sampling:
+            x = block1(x, time_embedding)
+            hidden_states.append(x)
+            x = block2(x, time_embedding)
+            x = attention(x) + x
+            hidden_states.append(x)
+            x = downsample(x)
+
+        # Middle block
+        x = self.mid_block1(x, time_embedding)
+        x = self.mid_attn(x) + x
+        x = self.mid_block2(x, time_embedding)
+
+        # Upsampling path
+        for block1, block2, attention, upsample in self.up_sampling:
+            x = torch.cat((x, hidden_states.pop()), dim=1)
+            x = block1(x, time_embedding)
+            x = torch.cat((x, hidden_states.pop()), dim=1)
+            x = block2(x, time_embedding)
+            x = attention(x) + x
+            x = upsample(x)
+
+        # Final block
+        x = torch.cat((x, residual), dim=1)
+        x = self.final_res_block(x, time_embedding)
+        x = self.final_conv(x)
 
         return x
+
+    @property
+    def downsample_factor(self) -> int:
+        """Returns the downsample factor of the UNet.
+
+        Returns:
+            int: Downsample factor.
+        """
+        return 2 ** (len(self.down_sampling) - 1)

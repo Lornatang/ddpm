@@ -1,4 +1,5 @@
 # Copyright (c) Lornatang. All rights reserved.
+import random
 from collections import namedtuple
 from typing import Any, Optional, Tuple, Union
 
@@ -45,8 +46,11 @@ class GaussianDiffusion(nn.Module):
             immiscible (bool, optional): Whether to use immiscible diffusion. Defaults to False.
         """
         super().__init__()
+        assert not model.in_channels != model.out_dim, "model must have the same number of channels as out_dim"
+
         self.model = model
         self.in_channels = self.model.in_channels
+        self.self_condition = self.model.self_condition
 
         # Ensure image_size is a tuple of two integers
         if isinstance(image_size, int):
@@ -124,9 +128,6 @@ class GaussianDiffusion(nn.Module):
         # Randomly sample time steps for each image in the batch
         sample_time = torch.randint(0, self.num_time_steps, (batch_size,), device=image.device).long()
 
-        # Normalize the output to the range [-1, 1]
-        image = (image * 2.) - 1.
-
         # Compute the loss for the input batch of images
         out = self.p_losses(image, sample_time, *args, **kwargs)
 
@@ -161,6 +162,7 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: torch.Tensor,
+            x_self_condition: Optional[torch.Tensor] = None,
             clip_denoised: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute the mean and variance for the diffusion process.
@@ -168,13 +170,14 @@ class GaussianDiffusion(nn.Module):
         Args:
             x (torch.Tensor): The input tensor.
             time_step (torch.Tensor): The time steps tensor.
+            x_self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
             clip_denoised (bool, optional): Whether to clip the predicted x_start. Defaults to True.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: The model mean, posterior variance,
             posterior log variance, and predicted x_start tensors.
         """
-        preds = self.model_predictions(x, time_step)
+        preds = self.model_predictions(x, time_step, x_self_condition)
         x_start = preds.pred_x_start
 
         if clip_denoised:
@@ -187,18 +190,20 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: int,
+            x_self_condition: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample from the Gaussian diffusion process at a given time step.
 
         Args:
             x (torch.Tensor): The input tensor.
             time_step (int): The current time step.
+            x_self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: The predicted image tensor and the predicted starting image tensor.
         """
         batched_times = torch.full((x.shape[0],), time_step, device=self.betas.device, dtype=torch.long)
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x, batched_times, clip_denoised=True)
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x, batched_times, x_self_condition, clip_denoised=True)
         noise = torch.randn_like(x) if time_step > 0 else 0.  # no noise if t == 0
         pred_image = model_mean + (0.5 * model_log_variance).exp() * noise
 
@@ -223,15 +228,17 @@ class GaussianDiffusion(nn.Module):
 
         # Sampling loop over all time steps in reverse order
         for time_step in reversed(range(0, self.num_time_steps)):
+            # Conditional input for self-conditioning
+            self_condition = x_start if self.self_condition else None
+
             # Perform a single step of sampling
-            image, x_start = self.p_sample(image, time_step)
+            image, x_start = self.p_sample(image, time_step, self_condition)
 
             # Append the current image to the list of images
             images.append(image)
 
         # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
-
         # Normalize the output to the range [0, 1]
         out = (out + 1.) * 0.5
 
@@ -264,9 +271,12 @@ class GaussianDiffusion(nn.Module):
         # Sampling loop over all time pairs
         for current_time, next_time in time_pairs:
             # Create a tensor with the current time step for all samples
-            time_step = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
+            time_cond = torch.full((shape[0],), current_time, device=self.betas.device, dtype=torch.long)
+            # Conditional input for self-conditioning
+            self_condition = x_start if self.self_condition else None
+
             # Predict the noise and reconstruct x_start
-            pred_noise, x_start, *_ = self.model_predictions(image, time_step, clip_x_start=True)
+            pred_noise, x_start, *_ = self.model_predictions(image, time_cond, self_condition, clip_x_start=True)
 
             # If the next time step is the final step, set the image to x_start
             if next_time < 0:
@@ -407,6 +417,7 @@ class GaussianDiffusion(nn.Module):
             self,
             x: torch.Tensor,
             time_step: torch.Tensor,
+            self_condition: Optional[torch.Tensor] = None,
             clip_x_start: bool = False
     ) -> ModelPrediction:
         """Generate model predictions for the Gaussian Diffusion process.
@@ -414,12 +425,13 @@ class GaussianDiffusion(nn.Module):
         Args:
             x (torch.Tensor): The input tensor.
             time_step (torch.Tensor): The time steps tensor.
+            self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
             clip_x_start (bool, optional): Whether to clip the predicted x_start. Defaults to False.
 
         Returns:
             ModelPrediction: The predicted noise and x_start tensors.
         """
-        model_output = self.model(x, time_step)
+        model_output = self.model(x, time_step, self_condition)
 
         x_start = self.prediction_start_from_latent_var(x, time_step, model_output)
         if clip_x_start:
@@ -457,9 +469,14 @@ class GaussianDiffusion(nn.Module):
 
         # Noise sample
         x_noisy = self.q_sample(x_start=x_start, time_step=time_step, noise=noise)
+        x_self_condition = None
+        if self.self_condition and random.random() < 0.5:
+            with torch.no_grad():
+                x_self_condition = self.model_predictions(x_noisy, time_step).pred_x_start
+                x_self_condition.detach_()
 
         # Predict and take gradient step
-        model_output = self.model(x_noisy, time_step)
+        model_output = self.model(x_noisy, time_step, x_self_condition)
         predicted_v = self.prediction_latent_var(x_start, time_step, noise)
 
         loss = F_torch.mse_loss(model_output, predicted_v, reduction="none")
@@ -499,6 +516,7 @@ class GaussianDiffusion(nn.Module):
         x_start = None
         # Reverse diffusion process to generate the interpolated image
         for i in reversed(range(0, time_step)):
-            image, x_start = self.p_sample(image, i)
+            self_condition = x_start if self.self_condition else None
+            image, x_start = self.p_sample(image, i, self_condition)
 
         return image
