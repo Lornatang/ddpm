@@ -307,7 +307,7 @@ class Trainer:
                         self.save_model()
 
             # End while
-            if self._get_memory(fraction=True) > 0.9:
+            if self._get_memory(fraction=True) > 0.5:
                 self._clear_memory()
         # End
         self._clear_memory()
