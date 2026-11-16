@@ -71,6 +71,11 @@ class Attention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, "b (h c) x y -> b h (x y) c", h=self.heads), qkv)
 
         mk, mv = map(lambda t: repeat(t, "h n d -> b h n d", b=b), self.mem_kv)
+        if self.attend.flash:
+            # SDPA's fused kernels require a contiguous final dimension and
+            # matching dtypes, including the learned memory tokens under AMP.
+            q = q.contiguous()
+            mk, mv = mk.to(k.dtype), mv.to(v.dtype)
         k, v = map(partial(torch.cat, dim=-2), ((mk, k), (mv, v)))
 
         out = self.attend(q, k, v)

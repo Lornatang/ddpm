@@ -12,9 +12,11 @@
 # limitations under the License.
 # ==============================================================================
 from copy import deepcopy
+from collections import defaultdict
 from typing import Any, Tuple
 
 import math
+import torch
 from torch import nn
 
 from .torch_utils import de_parallel
@@ -65,6 +67,7 @@ class ModelEMA:
             else:
                 setattr(old_state_dict, k, item)
 
+    @torch.no_grad()
     def update(self, model: nn.Module) -> None:
         """Update the parameters of the EMA model using exponential moving average based on the current model's parameters and decay rate.
 
@@ -80,10 +83,19 @@ class ModelEMA:
 
             # Get the state dictionary of the original model, ensuring to handle multi-GPU parallel models
             state_dict = de_parallel(model).state_dict()
+            groups = defaultdict(lambda: ([], []))
             for key, value in self.ema.state_dict().items():
                 if value.dtype.is_floating_point:
-                    value *= decay
-                    value += (1 - decay) * state_dict[key].detach()
+                    source = state_dict[key].detach()
+                    if value.layout != torch.strided or source.layout != torch.strided or value.dtype != source.dtype or value.device != source.device:
+                        value.mul_(decay).add_(source * (1 - decay))
+                    else:
+                        targets, sources = groups[(value.device, value.dtype)]
+                        targets.append(value)
+                        sources.append(source)
+            for targets, sources in groups.values():
+                torch._foreach_mul_(targets, decay)
+                torch._foreach_add_(targets, sources, alpha=1 - decay)
 
     def update_attr(self, model: nn.Module, include: tuple = (), exclude: tuple = ("process_group", "reducer")) -> None:
         """Update the attributes of the EMA model to match specific attributes of the original model.

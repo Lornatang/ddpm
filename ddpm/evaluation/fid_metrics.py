@@ -22,7 +22,7 @@ import numpy as np
 import torch
 from pytorch_fid.inception import InceptionV3
 from scipy import linalg
-from torch import nn
+from torch import distributed as dist, nn
 from torch.nn import functional as F_torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -52,6 +52,28 @@ def frechet_distance(mean1, covariance1, mean2, covariance2, epsilon=1e-6) -> fl
     return float(max(score, 0.0))
 
 
+def feature_statistics(features: np.ndarray, chunk_size: int = 8192):
+    """Compute sample mean/covariance in float64 with bounded extra memory."""
+    if features.ndim != 2 or len(features) < 2 or chunk_size < 1:
+        raise ValueError("FID statistics require at least two feature vectors")
+    count = 0
+    mean = np.zeros(features.shape[1], dtype=np.float64)
+    moments = np.zeros((features.shape[1], features.shape[1]), dtype=np.float64)
+    for start in range(0, len(features), chunk_size):
+        block = features[start:start + chunk_size].astype(np.float64, copy=True)
+        block_mean = block.mean(axis=0)
+        block -= block_mean
+        block_count = len(block)
+        total = count + block_count
+        delta = block_mean - mean
+        moments += block.T @ block
+        if count:
+            moments += np.outer(delta, delta) * (count * block_count / total)
+        mean += delta * (block_count / total)
+        count = total
+    return mean, moments / (count - 1)
+
+
 class FIDMetrics:
     def __init__(
         self,
@@ -78,7 +100,10 @@ class FIDMetrics:
         if dataset is not None and len(dataset) < num_samples:
             raise ValueError(f"FID needs {num_samples} distinct real images, found {len(dataset)}")
         self.cache_signature = self._cache_signature(dataset)
-        self.inception_v3 = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[feature_dims]]).to(self.device).eval()
+        # Recreating the metric after resume must not change training RNG state.
+        devices = [self.device] if self.device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            self.inception_v3 = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[feature_dims]]).to(self.device).eval()
         self.dataset_stat_loaded = False
         self.m2 = self.s2 = None
 
@@ -129,19 +154,20 @@ class FIDMetrics:
             self.m2, self.s2 = stats
             LOGGER.info(f"Dataset stats loaded from {path}")
         else:
-            features = []
+            features = None
             count = 0
             for real_samples in tqdm(self.data_loader, desc="Real Inception features", total=len(self.data_loader)):
                 real_samples = real_samples[: self.num_samples - count].to(self.device)
-                features.append(self.calculate_inception_features(real_samples).cpu())
+                batch = self.calculate_inception_features(real_samples).cpu().numpy()
+                if features is None:
+                    features = np.empty((self.num_samples, batch.shape[1]), dtype=np.float32)
+                features[count:count + len(batch)] = batch
                 count += len(real_samples)
                 if count == self.num_samples:
                     break
             if count != self.num_samples:
                 raise ValueError(f"FID expected {self.num_samples} real images, received {count}")
-            features = torch.cat(features).numpy()
-            self.m2 = np.mean(features, axis=0)
-            self.s2 = np.cov(features, rowvar=False)
+            self.m2, self.s2 = feature_statistics(features)
             path.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(path, m2=self.m2, s2=self.s2, cache_signature=self.cache_signature)
             LOGGER.info(f"Dataset stats cached to {path}")
@@ -152,11 +178,52 @@ class FIDMetrics:
         if not self.dataset_stat_loaded:
             self.load_dataset_stat()
         self.model.eval()
-        features = []
+        features = None
+        count = 0
         for size in tqdm(num_to_groups(self.num_samples, self.batch_size), desc="Generated Inception features"):
             samples = self.model.sample(batch_size=size)
-            features.append(self.calculate_inception_features(samples).cpu())
-        features = torch.cat(features).numpy()
-        mean = np.mean(features, axis=0)
-        covariance = np.cov(features, rowvar=False)
+            batch = self.calculate_inception_features(samples).cpu().numpy()
+            if features is None:
+                features = np.empty((self.num_samples, batch.shape[1]), dtype=np.float32)
+            features[count:count + size] = batch
+            count += size
+        mean, covariance = feature_statistics(features)
         return frechet_distance(mean, covariance, self.m2, self.s2)
+
+    @torch.inference_mode()
+    def calculate_distributed(self) -> float:
+        """Generate exactly num_samples across ranks and compute FID on rank 0."""
+        if not dist.is_initialized() or dist.get_world_size() == 1:
+            return self.calculate()
+        rank, world_size = dist.get_rank(), dist.get_world_size()
+        if rank == 0 and not self.dataset_stat_loaded:
+            self.load_dataset_stat()
+        dist.barrier()
+        self.model.eval()
+        counts = [self.num_samples // world_size + (r < self.num_samples % world_size) for r in range(world_size)]
+        local_batch = max(1, self.batch_size // world_size)
+        rounds = (max(counts) + local_batch - 1) // local_batch
+        features = np.empty((self.num_samples, self.feature_dims), dtype=np.float32) if rank == 0 else None
+        count = 0
+        for step in tqdm(range(rounds), desc="Distributed generated Inception features", disable=rank != 0):
+            size = min(local_batch, max(0, counts[rank] - step * local_batch))
+            outgoing = torch.zeros((local_batch, self.feature_dims), dtype=torch.float32, device=self.device)
+            if size:
+                batch = self.calculate_inception_features(self.model.sample(batch_size=size))
+                if batch.shape != (size, self.feature_dims):
+                    raise ValueError(f"Inception returned unexpected feature shape: {tuple(batch.shape)}")
+                outgoing[:size] = batch
+            gathered = [torch.empty_like(outgoing) for _ in range(world_size)]
+            dist.all_gather(gathered, outgoing)
+            if rank == 0:
+                for r, received in enumerate(gathered):
+                    valid = min(local_batch, max(0, counts[r] - step * local_batch))
+                    if valid:
+                        features[count:count + valid] = received[:valid].cpu().numpy()
+                        count += valid
+        score = torch.zeros((), dtype=torch.float64, device=self.device)
+        if rank == 0:
+            mean, covariance = feature_statistics(features)
+            score.fill_(frechet_distance(mean, covariance, self.m2, self.s2))
+        dist.broadcast(score, src=0)
+        return float(score.item())

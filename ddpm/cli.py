@@ -40,7 +40,8 @@ def train_main(argv=None, *, default_preset="cifar10"):
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--save-every", type=int, default=10000)
     parser.add_argument("--num-samples", type=int)
-    parser.add_argument("--validate", action="store_true", help="Compute FID when samples are saved")
+    parser.add_argument("--validate", action="store_true", help="Enable distributed training-time FID")
+    parser.add_argument("--fid-every", type=int, help="FID interval in steps (defaults to --save-every)")
     parser.add_argument("--fid-samples", type=int, default=50000)
     parser.add_argument("--fid-stat-path", default="./datasets/stats/train.npz")
     parser.add_argument("--fid-feature-dims", type=int, choices=(64, 192, 768, 2048), default=2048,
@@ -67,8 +68,9 @@ def train_main(argv=None, *, default_preset="cifar10"):
     }[args.preset]
 
     set_seed_everything(args.seed)
+    checkpoint = None
     if args.resume:
-        diffusion, _ = load_checkpoint(args.resume, "cpu", prefer_ema=False)
+        diffusion, checkpoint = load_checkpoint(args.resume, "cpu", prefer_ema=False)
     else:
         model = UNet(args.dim, channels_multipliers=tuple(args.multipliers), dropout=preset["dropout"],
                      attn_heads=args.heads, attn_dim_head=args.dim_head, flash=args.flash,
@@ -84,7 +86,10 @@ def train_main(argv=None, *, default_preset="cifar10"):
         num_fid_samples=args.fid_samples, fid_stat_path=args.fid_stat_path,
         save_and_sample_every=args.save_every, save_dir=args.save_dir, device=args.device, seed=args.seed,
         fid_feature_dims=args.fid_feature_dims,
+        resume_checkpoint=checkpoint,
+        fid_every=args.fid_every,
     )
+    del checkpoint
     trainer.train()
 
 

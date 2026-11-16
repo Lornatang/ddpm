@@ -17,12 +17,13 @@ from pathlib import Path
 from typing import Union
 
 import torch
+from torch import distributed as dist
 from torchvision import utils as vutils
 from tqdm import tqdm
 
 from ddpm.utils.checkpoint import load_checkpoint
+from ddpm.utils.distributed import DistributedInference
 from ddpm.utils.events import LOGGER
-from ddpm.utils.torch_utils import select_device
 
 __all__ = [
     "Inferencer",
@@ -54,28 +55,40 @@ class Inferencer:
         self.num_samples = num_samples
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.device = select_device(device)
+        self.distributed = DistributedInference(device)
+        self.device = self.distributed.device
 
         # Model
-        self.model, _ = load_checkpoint(self.model_weights_path, self.device)
-        self.model.float()
+        try:
+            self.model, _ = load_checkpoint(self.model_weights_path, self.device)
+            self.model.float()
+        except BaseException:
+            self.distributed.close()
+            raise
 
     def inference(self) -> None:
         """Perform model inference and save samples."""
-        start_time = time.time()
-
-        # Save samples
-        with torch.no_grad():
-            for i in tqdm(range(0, self.num_samples, self.batch_size), desc="Saving samples", unit="batch"):
-                current_batch_size = min(self.batch_size, self.num_samples - i)
-                samples = self.model.sample(batch_size=current_batch_size)
-                for sample in samples:
-                    vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
-
-        end_time = time.time()
-        total_time = end_time - start_time
-        avg_sample_time = total_time / self.num_samples
-
-        LOGGER.info(f"Generated {self.num_samples} samples in {total_time:.4f} seconds.")
-        LOGGER.info(f"Average time per sample: {avg_sample_time:.4f} seconds.")
-        LOGGER.info(f"Generated samples saved at {self.save_dir}")
+        group = self.distributed
+        count = self.num_samples // group.world_size + (group.rank < self.num_samples % group.world_size)
+        batch_size = max(1, self.batch_size // group.world_size)
+        try:
+            if group.world_size > 1:
+                dist.barrier()
+            start_time = time.perf_counter()
+            with torch.inference_mode():
+                for i in tqdm(range(0, count, batch_size), desc="Saving samples", unit="batch", disable=not group.is_main):
+                    current_batch_size = min(batch_size, count - i)
+                    samples = self.model.sample(batch_size=current_batch_size)
+                    for sample in samples:
+                        vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
+            total_time = time.perf_counter() - start_time
+            if group.world_size > 1:
+                elapsed = torch.tensor(total_time, device=self.device, dtype=torch.float64)
+                dist.all_reduce(elapsed, op=dist.ReduceOp.MAX)
+                total_time = elapsed.item()
+            if group.is_main:
+                LOGGER.info(f"Generated {self.num_samples} samples in {total_time:.4f} seconds.")
+                LOGGER.info(f"Average time per sample: {total_time / self.num_samples:.4f} seconds.")
+                LOGGER.info(f"Generated samples saved at {self.save_dir}")
+        finally:
+            group.close()

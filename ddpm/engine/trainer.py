@@ -15,11 +15,14 @@
 
 import math
 import hashlib
+import itertools
 import os
 import random
 import shutil
+import uuid
 import warnings
 from contextlib import nullcontext
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from typing import Tuple, Union
@@ -27,11 +30,11 @@ from typing import Tuple, Union
 import numpy as np
 import torch
 from torch import distributed as dist, nn, optim
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import BatchSampler, DataLoader, DistributedSampler
 from torchvision import utils as vutils
 from tqdm.auto import tqdm
 
-from ddpm.data.base import BaseImageFolder, image_transform
+from ddpm.data.base import BaseImageFolder, ReproducibleImageFolder, image_transform
 from ddpm.evaluation.fid_metrics import FIDMetrics
 from ddpm.utils.checkpoint import load_checkpoint, model_config
 from ddpm.utils.ema import ModelEMA
@@ -39,6 +42,27 @@ from ddpm.utils.envs import set_seed_everything
 from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups, save_yaml
 from ddpm.utils.torch_utils import de_parallel
+
+
+class EpochDistributedSampler(DistributedSampler):
+    """Include the epoch in each index, including in persistent workers."""
+
+    def __iter__(self):
+        return ((index, self.epoch) for index in super().__iter__())
+
+
+class ResumableBatchSampler(BatchSampler):
+    """Seek in sampler indices without loading and transforming earlier images."""
+
+    def __init__(self, sampler, batch_size, drop_last):
+        super().__init__(sampler, batch_size, drop_last)
+        self.start_batch = 0
+
+    def __iter__(self):
+        return itertools.islice(super().__iter__(), self.start_batch, None)
+
+    def __len__(self):
+        return max(0, super().__len__() - self.start_batch)
 
 
 class Trainer:
@@ -70,6 +94,8 @@ class Trainer:
         device: str = "cuda",
         seed: int = 0,
         fid_feature_dims: int = 2048,
+        resume_checkpoint: Union[dict, None] = None,
+        fid_every: Union[int, None] = None,
     ) -> None:
         self.rank = int(os.environ.get("RANK", "0"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -83,10 +109,13 @@ class Trainer:
             raise ValueError("num_workers must be non-negative and training step counts must be positive")
         if save_and_sample_every < 1 or num_samples < 1 or max_grad_norm <= 0:
             raise ValueError("sampling interval, num_samples and max_grad_norm must be positive")
+        if fid_every is not None and fid_every < 1:
+            raise ValueError("fid_every must be positive")
 
         self.root = str(root)
         self.augment = augment
         self.resume = str(resume) if resume else None
+        self._resume_checkpoint = resume_checkpoint
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.gradient_accumulate_every = gradient_accumulate_every
@@ -96,6 +125,7 @@ class Trainer:
         self.num_fid_samples, self.fid_stat_path = num_fid_samples, str(fid_stat_path)
         self.fid_feature_dims = fid_feature_dims
         self.save_and_sample_every, self.seed = save_and_sample_every, seed
+        self.fid_every = fid_every if fid_every is not None else save_and_sample_every
         self.device_type = str(device)
         self.device = self._select_device(device)
         self.save_dir = Path(self.resume).parent.parent if self.resume else Path(save_dir)
@@ -149,15 +179,23 @@ class Trainer:
             )
 
     def _setup_train(self) -> None:
-        checkpoint = None
-        if self.resume:
+        checkpoint, self._resume_checkpoint = self._resume_checkpoint, None
+        if self.resume and checkpoint is None:
             self.model, checkpoint = load_checkpoint(self.resume, self.device, model=self.model, prefer_ema=False)
         self.model = self.model.to(self.device)
         if self.world_size > 1:
             device_ids = [self.local_rank] if self.device.type == "cuda" else None
             self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=device_ids)
 
-        dataset = BaseImageFolder(self.root, image_transform(self.image_size, augment=self.augment, normalize=True))
+        self.data_mode = checkpoint.get("data_mode", "legacy") if checkpoint is not None else "stateless"
+        if self.data_mode not in ("legacy", "stateless"):
+            raise ValueError(f"Unsupported checkpoint data mode: {self.data_mode}")
+        if self.data_mode == "legacy":
+            dataset = BaseImageFolder(self.root, image_transform(self.image_size, augment=self.augment, normalize=True))
+        else:
+            dataset = ReproducibleImageFolder(
+                self.root, image_transform(self.image_size, normalize=True), seed=self.seed, augment=self.augment
+            )
         if len(dataset) < self.batch_size:
             raise ValueError(f"Training needs at least batch_size={self.batch_size} images, found {len(dataset)}")
         names = "\0".join(str(path.relative_to(dataset.root)) for path in dataset.samples)
@@ -169,17 +207,21 @@ class Trainer:
             "gradient_accumulate_every": self.gradient_accumulate_every,
             "max_grad_norm": self.max_grad_norm, "augment": self.augment, "seed": self.seed,
         }
-        self.train_sampler = DistributedSampler(
+        sampler_type = EpochDistributedSampler if self.data_mode == "stateless" else DistributedSampler
+        self.train_sampler = sampler_type(
             dataset, num_replicas=self.world_size, rank=self.rank,
             shuffle=True, seed=self.seed, drop_last=True,
         )
         self.data_generator = torch.Generator()
+        self.batch_sampler = ResumableBatchSampler(self.train_sampler, self.batch_size // self.world_size, drop_last=True)
+        self.batches_per_epoch = len(self.batch_sampler)
         self.train_loader = DataLoader(
-            dataset, batch_size=self.batch_size // self.world_size, sampler=self.train_sampler,
-            num_workers=self.num_workers, pin_memory=self.device.type == "cuda",
-            persistent_workers=False, drop_last=True, generator=self.data_generator,
+            dataset, batch_sampler=self.batch_sampler, num_workers=self.num_workers,
+            pin_memory=self.device.type == "cuda",
+            persistent_workers=self.data_mode == "stateless" and self.num_workers > 0,
+            generator=self.data_generator,
         )
-        if not len(self.train_loader):
+        if not self.batches_per_epoch:
             raise ValueError("Training loader contains no complete batches")
 
         if self.is_main:
@@ -236,7 +278,7 @@ class Trainer:
             self.ema.updates = int(checkpoint.get("updates", 0))
         self.data_epoch = int(checkpoint.get("data_epoch", 0))
         self.batches_in_epoch = int(checkpoint.get("batches_in_epoch", 0))
-        if self.batches_in_epoch >= len(self.train_loader):
+        if self.batches_in_epoch >= self.batches_per_epoch:
             raise ValueError("Checkpoint data position is incompatible with this dataset or batch size")
         rng_states = checkpoint.get("rng_states")
         if rng_states is not None:
@@ -251,16 +293,17 @@ class Trainer:
         if self._loader_iter is None:
             self.train_sampler.set_epoch(self.data_epoch)
             self.data_generator.manual_seed(self.seed + self.data_epoch * self.world_size + self.rank)
+            self.batch_sampler.start_batch = self.batches_in_epoch if self.data_mode == "stateless" else 0
             self._loader_iter = iter(self.train_loader)
             # Rebuild the same worker/sampler position without consuming model RNG.
-            if self.batches_in_epoch:
+            if self.batches_in_epoch and self.data_mode == "legacy":
                 state = self._rng_state()
                 for _ in range(self.batches_in_epoch):
                     next(self._loader_iter)
                 self._set_rng_state(state)
         batch = next(self._loader_iter)
         self.batches_in_epoch += 1
-        if self.batches_in_epoch == len(self.train_loader):
+        if self.batches_in_epoch == self.batches_per_epoch:
             self.data_epoch += 1
             self.batches_in_epoch = 0
             self._loader_iter = None
@@ -280,12 +323,12 @@ class Trainer:
         """Save full precision online/EMA weights and resumable training state."""
         model = de_parallel(self.model)
         checkpoint = {
-            "format_version": 2, "step": self.current_step,
+            "format_version": 3, "step": self.current_step,
             "model_config": model_config(model), "model": model.state_dict(),
             "ema": self.ema.ema.state_dict(), "updates": self.ema.updates,
             "optimizer": self.optimizer.state_dict(), "scaler": self.scaler.state_dict(),
             "best_fid_score": self.best_fid_score, "rng_states": rng_states,
-            "data_epoch": self.data_epoch, "batches_in_epoch": self.batches_in_epoch,
+            "data_epoch": self.data_epoch, "batches_in_epoch": self.batches_in_epoch, "data_mode": self.data_mode,
             "resume_config": self.resume_config,
         }
         weights_path = self.save_weights_dir / f"{self.current_step}.pkl"
@@ -294,9 +337,15 @@ class Trainer:
         temporary.replace(weights_path)
         for name in (("last.pkl", "best.pkl") if is_best else ("last.pkl",)):
             destination = self.save_weights_dir / name
-            temporary_copy = destination.with_suffix(".tmp")
-            shutil.copyfile(weights_path, temporary_copy)
-            temporary_copy.replace(destination)
+            temporary_copy = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                try:
+                    os.link(weights_path, temporary_copy)
+                except OSError:
+                    shutil.copyfile(weights_path, temporary_copy)
+                temporary_copy.replace(destination)
+            finally:
+                temporary_copy.unlink(missing_ok=True)
         self.last_saved_step = self.current_step
 
     def _save_checkpoint(self, is_best: bool = False) -> None:
@@ -311,7 +360,7 @@ class Trainer:
         if self.world_size > 1:
             dist.barrier()
 
-    def _sample_and_validate(self) -> bool:
+    def _save_samples(self) -> None:
         self.ema.ema.eval()
         with torch.inference_mode():
             images = torch.cat([
@@ -319,13 +368,43 @@ class Trainer:
                 for n in num_to_groups(self.num_samples, self.batch_size)
             ])
             vutils.save_image(images, self.save_samples_dir / f"{self.current_step}.png", nrow=max(1, int(math.sqrt(self.num_samples))))
-        if self.fid_metrics is None:
-            return False
-        self.fid_score = self.fid_metrics.calculate()
-        LOGGER.info(f"FID score: {self.fid_score:.2f}")
-        if self.fid_score < self.best_fid_score:
-            self.best_fid_score = self.fid_score
-            return True
+
+    @torch.no_grad()
+    def _evaluate(self) -> bool:
+        if self.world_size == 1:
+            score = self.fid_metrics.calculate()
+        else:
+            # Only rank 0 maintains EMA during training. Broadcast its current
+            # state in dtype groups before every distributed evaluation.
+            model = self.ema.ema if self.is_main else deepcopy(de_parallel(self.model)).eval().requires_grad_(False)
+            groups = {}
+            for value in model.state_dict().values():
+                groups.setdefault((value.device, value.dtype), []).append(value)
+            for values in groups.values():
+                flattened = torch.cat([value.reshape(-1) for value in values])
+                dist.broadcast(flattened, src=0)
+                if not self.is_main:
+                    offset = 0
+                    for value in values:
+                        value.copy_(flattened[offset:offset + value.numel()].view_as(value))
+                        offset += value.numel()
+            if self.fid_metrics is None:
+                # Rank 0 constructed Inception at setup, so its first download
+                # has finished before other ranks reach this broadcast.
+                self.fid_metrics = FIDMetrics(
+                    None, self.batch_size, model, dataset_stat_path=self.fid_stat_path,
+                    num_samples=self.num_fid_samples, device=self.device, feature_dims=self.fid_feature_dims,
+                )
+            self.fid_metrics.model = model
+            score = self.fid_metrics.calculate_distributed()
+            if not self.is_main:
+                self.fid_metrics.model = None
+        self.fid_score = score
+        if self.is_main:
+            LOGGER.info(f"FID score: {score:.2f}")
+            if score < self.best_fid_score:
+                self.best_fid_score = score
+                return True
         return False
 
     def train(self) -> None:
@@ -350,12 +429,13 @@ class Trainer:
                     if self.is_main:
                         pbar.set_description(f"Loss: {total_loss:.4e}")
                         pbar.update(1)
-                    if self.current_step % self.save_and_sample_every == 0:
-                        is_best = self._sample_and_validate() if self.is_main else False
+                    sample_due = self.current_step % self.save_and_sample_every == 0
+                    fid_due = self.val and self.current_step % self.fid_every == 0
+                    if sample_due and self.is_main:
+                        self._save_samples()
+                    is_best = self._evaluate() if fid_due else False
+                    if sample_due or fid_due or self.current_step == self.num_steps:
                         self._save_checkpoint(is_best)
-                # Always produce a final resumable checkpoint, even between intervals.
-                if self.current_step > 0 and (self.current_step % self.save_and_sample_every):
-                    self._save_checkpoint()
         finally:
             if self.world_size > 1 and dist.is_initialized():
                 dist.destroy_process_group()

@@ -16,14 +16,15 @@ from pathlib import Path
 from typing import Union
 
 import torch
+from torch import distributed as dist
 from torch.utils.data import DataLoader
 from torchvision import utils as vutils
 
 from ddpm.data.base import BaseImageFolder, image_transform
 from ddpm.evaluation.fid_metrics import FIDMetrics
 from ddpm.utils.checkpoint import load_checkpoint
+from ddpm.utils.distributed import DistributedInference
 from ddpm.utils.events import LOGGER
-from ddpm.utils.torch_utils import select_device
 
 __all__ = [
     "Validator",
@@ -61,28 +62,25 @@ class Validator:
         self.fid_stat_path = fid_stat_path
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.device = select_device(device, self.batch_size)
+        self.distributed = DistributedInference(device)
+        self.device = self.distributed.device
 
         # Model
-        self.model, _ = load_checkpoint(self.model_weights_path, self.device)
-        self.model.float()
-
-        # Dataset and dataloader
-        transform = image_transform(self.model.image_size)
-        self.dataset = BaseImageFolder(root, transform)
-        self.data_loader = DataLoader(self.dataset, batch_size, False, num_workers=num_workers,
-                                      pin_memory=self.device.type == "cuda", persistent_workers=num_workers > 0)
+        try:
+            self.model, _ = load_checkpoint(self.model_weights_path, self.device)
+            self.model.float()
+            transform = image_transform(self.model.image_size)
+            self.dataset = BaseImageFolder(root, transform) if self.distributed.is_main else None
+            self.data_loader = (DataLoader(self.dataset, batch_size, False, num_workers=num_workers,
+                                           pin_memory=self.device.type == "cuda", persistent_workers=num_workers > 0)
+                                if self.dataset is not None else None)
+        except BaseException:
+            self.distributed.close()
+            raise
 
         # Metric computation
-        self.fid_metrics = FIDMetrics(
-            self.data_loader,
-            self.batch_size,
-            self.model,
-            dataset_stat_path=self.fid_stat_path,
-            num_samples=self.num_fid_samples,
-            device=self.device,
-            feature_dims=feature_dims,
-        )
+        self.feature_dims = feature_dims
+        self.fid_metrics = None
 
     def validate(self) -> float:
         """Perform model evaluation and calculate FID score.
@@ -90,15 +88,32 @@ class Validator:
         Returns:
             float: The FID score of the model on the validation dataset.
         """
-        # Save samples
-        LOGGER.info(f"Saving {self.batch_size} samples...")
-        with torch.no_grad():
-            samples = self.model.sample(batch_size=self.batch_size)
-            for sample in samples:
-                vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
+        group = self.distributed
+        try:
+            # Rank 0 finishes the first Inception download before other ranks load it.
+            if group.is_main:
+                self.fid_metrics = self._make_fid()
+            if group.world_size > 1:
+                dist.barrier()
+            if not group.is_main:
+                self.fid_metrics = self._make_fid()
+            if group.is_main:
+                LOGGER.info(f"Saving {self.batch_size} samples...")
+            preview_count = self.batch_size // group.world_size + (group.rank < self.batch_size % group.world_size)
+            if preview_count:
+                with torch.inference_mode():
+                    samples = self.model.sample(batch_size=preview_count)
+                    for sample in samples:
+                        vutils.save_image(sample, self.save_dir.joinpath(f"{uuid.uuid4()}.png"))
+            fid_score = (self.fid_metrics.calculate_distributed() if group.world_size > 1
+                         else self.fid_metrics.calculate())
+            if group.is_main:
+                LOGGER.info(f"FID score: {fid_score:.2f}")
+            return fid_score
+        finally:
+            group.close()
 
-        # Calculate metrics
-        fid_score = self.fid_metrics.calculate()
-        LOGGER.info(f"FID score: {fid_score:.2f}")
-
-        return fid_score
+    def _make_fid(self):
+        return FIDMetrics(self.data_loader, self.batch_size, self.model,
+                          dataset_stat_path=self.fid_stat_path, num_samples=self.num_fid_samples,
+                          device=self.device, feature_dims=self.feature_dims)

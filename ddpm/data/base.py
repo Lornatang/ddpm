@@ -17,9 +17,10 @@ from typing import Any, Callable, Optional, Tuple, Union
 from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.datasets.folder import IMG_EXTENSIONS, default_loader
+from torchvision.transforms import functional as transform_functional
 
 __all__ = [
-    "BaseImageFolder", "image_transform",
+    "BaseImageFolder", "ReproducibleImageFolder", "image_transform",
 ]
 
 
@@ -64,6 +65,34 @@ class BaseImageFolder(Dataset):
         if self.transform is not None:
             sample = self.transform(sample)
 
+        return sample
+
+
+class ReproducibleImageFolder(BaseImageFolder):
+    """Apply a deterministic flip for each (seed, epoch, image) tuple.
+
+    The epoch is supplied as part of the sampler index, so this also works with
+    persistent DataLoader workers and does not depend on worker RNG state.
+    """
+
+    def __init__(self, *args, seed: int = 0, augment: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seed = seed
+        self.augment = augment
+
+    def __getitem__(self, key):
+        index, epoch = key
+        sample = super().__getitem__(index)
+        if self.augment:
+            # SplitMix64 gives a stable, well-distributed decision without
+            # consuming the model's or the workers' random number generators.
+            mask = (1 << 64) - 1
+            value = (self.seed + index + epoch * 0x9E3779B97F4A7C15) & mask
+            value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & mask
+            value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
+            value ^= value >> 31
+            if value & 1:
+                sample = transform_functional.hflip(sample)
         return sample
 
 
