@@ -1,13 +1,27 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Fréchet Inception Distance with matched real and generated preprocessing."""
+
+import hashlib
+import json
 from pathlib import Path
 from typing import Union
 
-import math
 import numpy as np
 import torch
-from einops import rearrange
-from pytorch_fid.fid_score import calculate_frechet_distance
 from pytorch_fid.inception import InceptionV3
+from scipy import linalg
 from torch import nn
 from torch.nn import functional as F_torch
 from torch.utils.data import DataLoader
@@ -16,127 +30,133 @@ from tqdm import tqdm
 from ddpm.utils.events import LOGGER
 from ddpm.utils.ops import num_to_groups
 
-__all__ = [
-    "FIDMetrics",
-]
+__all__ = ["FIDMetrics"]
+
+
+def frechet_distance(mean1, covariance1, mean2, covariance2, epsilon=1e-6) -> float:
+    """Compute FID using the scipy sqrtm API shared by old and new releases."""
+    mean1, mean2 = np.atleast_1d(mean1), np.atleast_1d(mean2)
+    covariance1, covariance2 = np.atleast_2d(covariance1), np.atleast_2d(covariance2)
+    if mean1.shape != mean2.shape or covariance1.shape != covariance2.shape:
+        raise ValueError("FID feature statistics have incompatible shapes")
+    root = linalg.sqrtm(covariance1 @ covariance2)
+    if not np.isfinite(root).all():
+        offset = np.eye(covariance1.shape[0]) * epsilon
+        root = linalg.sqrtm((covariance1 + offset) @ (covariance2 + offset))
+    if np.iscomplexobj(root):
+        if not np.allclose(np.diag(root).imag, 0, atol=1e-3):
+            raise ValueError("FID covariance square root has a large imaginary component")
+        root = root.real
+    difference = mean1 - mean2
+    score = difference @ difference + np.trace(covariance1) + np.trace(covariance2) - 2 * np.trace(root)
+    return float(max(score, 0.0))
 
 
 class FIDMetrics:
     def __init__(
-            self,
-            data_loader: DataLoader,
-            batch_size: int,
-            model: nn.Module,
-            dataset_stat_path: Union[Path, str],
-            device: torch.device = torch.device("cuda:0"),
-            num_samples: int = 50000,
+        self,
+        data_loader: DataLoader,
+        batch_size: int,
+        model: nn.Module,
+        dataset_stat_path: Union[Path, str],
+        device: torch.device = torch.device("cuda:0"),
+        num_samples: int = 50000,
+        feature_dims: int = 2048,
     ) -> None:
-        """Initialize the FID class.
-
-        Args:
-            data_loader (DataLoader): DataLoader object for loading the dataset.
-            batch_size (int): Number of samples per batch.
-            model (nn.Module): Model used to generate samples.
-            dataset_stat_path (Union[Path, str]): Directory to save or load dataset statistics.
-            device (torch.device): Device to run the computations on (e.g., 'cuda:0' or 'cpu'). Defaults to ``torch.device("cuda:0")``.
-            num_samples (int): Number of samples to use for FID calculation. Defaults to 50000.
-        """
+        if batch_size < 1 or num_samples < 2:
+            raise ValueError("FID requires a positive batch size and at least two samples")
+        if feature_dims not in InceptionV3.BLOCK_INDEX_BY_DIM:
+            raise ValueError(f"Unsupported Inception feature dimension: {feature_dims}")
         self.batch_size = batch_size
         self.data_loader = data_loader
         self.model = model
-        self.dataset_stat_path = dataset_stat_path
-        self.device = device
+        self.dataset_stat_path = Path(dataset_stat_path)
+        self.device = torch.device(device)
         self.num_samples = num_samples
-
-        # Initialize InceptionV3 model for feature extraction
-        self.inception_v3 = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[2048]]).to(device)
+        self.feature_dims = feature_dims
+        dataset = getattr(data_loader, "dataset", None)
+        if dataset is not None and len(dataset) < num_samples:
+            raise ValueError(f"FID needs {num_samples} distinct real images, found {len(dataset)}")
+        self.cache_signature = self._cache_signature(dataset)
+        self.inception_v3 = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[feature_dims]]).to(self.device).eval()
         self.dataset_stat_loaded = False
-        self.m2 = None  # Mean of real dataset features
-        self.s2 = None  # Covariance of real dataset features
+        self.m2 = self.s2 = None
+
+    def _cache_signature(self, dataset) -> str:
+        metadata = {
+            "format": 2, "feature_dims": self.feature_dims, "num_samples": self.num_samples,
+            "dataset": type(dataset).__qualname__ if dataset is not None else None,
+            "root": str(Path(dataset.root).resolve()) if hasattr(dataset, "root") else None,
+            "length": len(dataset) if dataset is not None else None,
+            "transform": repr(getattr(dataset, "transform", None)),
+        }
+        digest = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode())
+        # Invalidate cached statistics when images are added or modified.
+        for path in getattr(dataset, "samples", ()):
+            path = Path(path)
+            stat = path.stat()
+            digest.update(f"{path.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+        return digest.hexdigest()
 
     def calculate_inception_features(self, samples: torch.Tensor) -> torch.Tensor:
-        """Calculate Inception features for given samples.
-
-        Args:
-            samples (torch.Tensor): Input samples (images).
-
-        Returns:
-            torch.Tensor: Extracted features.
-        """
-        self.inception_v3.eval()
+        """Extract features from RGB tensors in the range [0, 1]."""
         features = self.inception_v3(samples)[0]
-
-        if features.size(2) != 1 or features.size(3) != 1:
+        if features.shape[-2:] != (1, 1):
             features = F_torch.adaptive_avg_pool2d(features, (1, 1))
+        return features.flatten(start_dim=1)
 
-        features = rearrange(features, "... 1 1 -> ...")
-
-        return features
-
-    def calculate_inception_logits(self, samples: torch.Tensor) -> torch.Tensor:
-        """Calculate Inception logits for given samples.
-
-        Args:
-            samples (torch.Tensor): Input samples (images).
-
-        Returns:
-            torch.Tensor: Extracted logits (raw class scores).
-        """
-        self.inception_v3.eval()
-        logits = self.inception_v3(samples)[0]
-
-        return logits
-
-    def load_dataset_stat(self) -> None:
-        """Load or calculate dataset statistics (mean and covariance of Inception features)."""
+    def _cached_stats(self, path: Path):
+        if not path.is_file():
+            return None
         try:
-            dataset_stat = np.load(str(self.dataset_stat_path))
-            self.m2, self.s2 = dataset_stat["m2"], dataset_stat["s2"]
-            LOGGER.info(f"Dataset stats loaded from {self.dataset_stat_path}")
-            dataset_stat.close()
-        except OSError:
-            num_batches = int(math.ceil(self.num_samples / self.batch_size))
-            stacked_real_features = []
-            for _ in tqdm(range(num_batches), desc="Stacking inception features"):
-                try:
-                    real_samples = next(self.data_loader)
-                except StopIteration:
-                    break
-                real_samples = real_samples.to(self.device)
-                real_features = self.calculate_inception_features(real_samples)
-                stacked_real_features.append(real_features)
-            stacked_real_features = (torch.cat(stacked_real_features, dim=0).cpu().numpy())
-            m2 = np.mean(stacked_real_features, axis=0)
-            s2 = np.cov(stacked_real_features, rowvar=False)
-            Path(self.dataset_stat_path).parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(str(self.dataset_stat_path), m2=m2, s2=s2)
-            LOGGER.info(f"Dataset stats cached to {self.dataset_stat_path} for future use.")
-            self.m2, self.s2 = m2, s2
+            with np.load(path, allow_pickle=False) as data:
+                if str(data["cache_signature"].item()) == self.cache_signature:
+                    return data["m2"], data["s2"]
+        except (OSError, ValueError, KeyError):
+            pass
+        return None
 
+    @torch.inference_mode()
+    def load_dataset_stat(self) -> None:
+        """Load compatible statistics or calculate them from exactly num_samples images."""
+        path = self.dataset_stat_path
+        stats = self._cached_stats(path)
+        if path.exists() and stats is None:
+            # Preserve old or incompatible files; don't mistake them for these statistics.
+            path = path.with_name(f"{path.stem}-{self.cache_signature[:12]}{path.suffix or '.npz'}")
+            stats = self._cached_stats(path)
+        if stats is not None:
+            self.m2, self.s2 = stats
+            LOGGER.info(f"Dataset stats loaded from {path}")
+        else:
+            features = []
+            count = 0
+            for real_samples in tqdm(self.data_loader, desc="Real Inception features", total=len(self.data_loader)):
+                real_samples = real_samples[: self.num_samples - count].to(self.device)
+                features.append(self.calculate_inception_features(real_samples).cpu())
+                count += len(real_samples)
+                if count == self.num_samples:
+                    break
+            if count != self.num_samples:
+                raise ValueError(f"FID expected {self.num_samples} real images, received {count}")
+            features = torch.cat(features).numpy()
+            self.m2 = np.mean(features, axis=0)
+            self.s2 = np.cov(features, rowvar=False)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(path, m2=self.m2, s2=self.s2, cache_signature=self.cache_signature)
+            LOGGER.info(f"Dataset stats cached to {path}")
         self.dataset_stat_loaded = True
 
     @torch.inference_mode()
     def calculate(self) -> float:
-        """Calculate FID score.
-
-        Returns:
-            float: FID score.
-        """
         if not self.dataset_stat_loaded:
             self.load_dataset_stat()
-
         self.model.eval()
-        batch_size_list = num_to_groups(self.num_samples, self.batch_size)
-        stacked_fake_features = []
-        for batch_size in tqdm(batch_size_list, desc="Calculate metrics"):
-            fake_samples = self.model.sample(batch_size=batch_size)
-            fake_features = self.calculate_inception_features(fake_samples)
-            stacked_fake_features.append(fake_features)
-
-        # Calculate FID Score
-        stacked_fake_features = torch.cat(stacked_fake_features, dim=0).cpu().numpy()
-        m1 = np.mean(stacked_fake_features, axis=0)
-        s1 = np.cov(stacked_fake_features, rowvar=False)
-        fid_score = calculate_frechet_distance(m1, s1, self.m2, self.s2)
-
-        return fid_score
+        features = []
+        for size in tqdm(num_to_groups(self.num_samples, self.batch_size), desc="Generated Inception features"):
+            samples = self.model.sample(batch_size=size)
+            features.append(self.calculate_inception_features(samples).cpu())
+        features = torch.cat(features).numpy()
+        mean = np.mean(features, axis=0)
+        covariance = np.cov(features, rowvar=False)
+        return frechet_distance(mean, covariance, self.m2, self.s2)

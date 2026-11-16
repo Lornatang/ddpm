@@ -1,4 +1,16 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 import argparse
 from pathlib import Path
 from typing import List, Union
@@ -6,11 +18,9 @@ from typing import List, Union
 import numpy as np
 import torch
 from PIL import Image
-from torch.nn import functional as F_torch
 from tqdm import tqdm
 
-from ddpm.models.unet import UNet
-from ddpm.utils.scheduler import linear_beta_schedule
+from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.torch_utils import select_device
 
 
@@ -31,14 +41,14 @@ def get_opts() -> argparse.Namespace:
     parser.add_argument(
         "--image-size",
         type=int,
-        default=32,
-        help="Size to resize the input image (both width and height). Defaults to 32"
+        default=None,
+        help="Optional image size; must match the checkpoint"
     )
     parser.add_argument(
         "-n", "--num-time-steps",
         type=int,
-        default=1000,
-        help="Total number of diffusion time steps in the process. Defaults to 1000"
+        default=None,
+        help="Optional number of time steps; must match the checkpoint"
     )
     parser.add_argument(
         "--device",
@@ -50,6 +60,7 @@ def get_opts() -> argparse.Namespace:
     return parser.parse_args()
 
 
+@torch.inference_mode()
 def reverse_diffusion(
         model: torch.nn.Module,
         x_t: torch.Tensor,
@@ -67,27 +78,14 @@ def reverse_diffusion(
     Returns:
         List[np.ndarray]: List of intermediate denoised images at every 100 time steps,  with values normalized to [0, 255].
     """
-    betas = linear_beta_schedule(num_time_steps).to(device)
-    alphas = 1 - betas
-    alphas_cumprod = torch.cumprod(alphas, dim=0)
-    alphas_cumprod_prev = F_torch.pad(alphas_cumprod[:-1], pad=(1, 0), value=1.)
+    if num_time_steps != model.num_time_steps:
+        raise ValueError("num_time_steps must match the checkpoint schedule")
     result_list = []
+    x_start = None
     for time_step in tqdm(range(num_time_steps - 1, -1, -1)):
-        time_step = torch.tensor([time_step], device=device)
-        alphas_bar_t_1 = alphas_cumprod_prev.gather(-1, time_step).view(-1, 1, 1, 1)
-        alphas_bar_t = alphas_cumprod.gather(-1, time_step).view(-1, 1, 1, 1)
-        beta_t = betas.gather(-1, time_step).view(-1, 1, 1, 1)
-        alpha_t = 1 - beta_t
-        sigma = torch.sqrt((1 - alphas_bar_t_1) / (1 - alphas_bar_t) * beta_t)
-        z = torch.randn_like(x_t, device=device)
-        with torch.no_grad():
-            mu_pred = (1 - alpha_t) / torch.sqrt(1 - alphas_bar_t) * model(x_t.float(), time_step.float())
-        if time_step.cpu().numpy() > 0:
-            x_t_1 = 1 / torch.sqrt(alpha_t) * (x_t - mu_pred) + sigma * z
-        else:
-            x_t_1 = 1 / torch.sqrt(alpha_t) * (x_t - mu_pred)
-        x_t = x_t_1
-        if time_step.cpu().numpy() % 100 == 0:
+        condition = x_start if model.self_condition else None
+        x_t, x_start = model.p_sample(x_t, time_step, condition)
+        if time_step % 100 == 0:
             result_list.append((x_t.permute(0, 2, 3, 1).cpu().numpy()[0] + 1) * 127.5)
 
     return result_list
@@ -97,15 +95,15 @@ def main() -> None:
     opts = get_opts()
     weights = Path(opts.weights)
     output_path = Path(opts.output_path)
-    image_size = opts.image_size
-    num_time_steps = opts.num_time_steps
     device = select_device(opts.device)
 
-    model = UNet(128, channels_multipliers=(1, 2, 2, 2), dropout=0.1).to(device)
-    ckpt = torch.load(weights, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["ema"].model.state_dict())
+    model, _ = load_checkpoint(weights, device)
+    image_size = tuple(model.image_size)
+    if opts.image_size is not None and image_size != (opts.image_size, opts.image_size):
+        raise ValueError("image_size must match the checkpoint")
+    num_time_steps = model.num_time_steps if opts.num_time_steps is None else opts.num_time_steps
 
-    x_t = torch.randn(1, 3, image_size, image_size, dtype=torch.float32, device=device)
+    x_t = torch.randn(1, model.in_channels, *image_size, dtype=torch.float32, device=device)
 
     result = reverse_diffusion(model, x_t, num_time_steps, device=device)
     result = np.concatenate(result, axis=1)

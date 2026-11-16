@@ -1,8 +1,19 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 import torch
 from torch import nn
 from torch.nn import functional as F_torch
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 __all__ = [
     "Attend",
@@ -28,11 +39,10 @@ class Attend(nn.Module):
         self.flash = flash
         self.scale = scale
 
-        self.attn_dropout = nn.Dropout(dropout, inplace=True)
+        self.attn_dropout = nn.Dropout(dropout)
 
     def flash_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        """Performs scaled dot-product attention using the CUDA Flash Attention implementation
-        for improved performance and memory efficiency.
+        """Perform scaled dot-product attention with automatic kernel selection.
 
         Args:
             q (torch.Tensor): Query tensor of shape [batch_size, heads, seq_len_q, dim_head]
@@ -42,17 +52,11 @@ class Attend(nn.Module):
         Returns:
             torch.Tensor: Output attention tensor of shape [batch_size, heads, seq_len_q, dim_head]
         """
-        if self.scale is not None:
-            default_scale = q.shape[-1]
-            q = q * (self.scale / default_scale)
-
-        # Ensure tensors are contiguous and half in memory for optimal performance
-        q, k, v = map(lambda t: t.contiguous().half(), (q, k, v))
-
-        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-            out = F_torch.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.).float()
-
-        return out
+        # Let PyTorch choose Flash, memory-efficient or math attention for the
+        # current hardware, dtype and inputs. Do not silently change the dtype.
+        return F_torch.scaled_dot_product_attention(
+            q, k, v, dropout_p=self.dropout if self.training else 0., scale=self.scale
+        )
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """Forward pass for the Attend module.

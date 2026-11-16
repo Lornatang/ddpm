@@ -1,32 +1,17 @@
 # Copyright (c) Lornatang. All rights reserved.
-from datetime import datetime
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+from ddpm.cli import train_main
 
-from ddpm.engine.trainer import Trainer
-from ddpm.models.gaussian_diffusion import GaussianDiffusion
-from ddpm.models.unet import UNet
-
-model = UNet(128, channels_multipliers=(1, 2, 2, 2), dropout=0.1, flash=True)
-diffusion_model = GaussianDiffusion(model, 32, 1000, sampling_time_steps=250)
-
-trainer = Trainer(
-    diffusion_model,
-    "./datasets/cifar10/train",
-    True,
-    resume=None,
-    batch_size=128,
-    gradient_accumulate_every=1,
-    lr=2e-4,
-    betas=(0.9, 0.999),
-    num_steps=800000,
-    max_grad_norm=1.0,
-    val=False,
-    num_samples=64,
-    num_fid_samples=50000,
-    fid_stat_path="./datasets/stats/cifar10_train_r32.npz",
-    save_and_sample_every=10000,
-    save_dir=f"./results/train/cifar10-r32-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-    device="0",
-    seed=0,
-)
-
-trainer.train()
+if __name__ == "__main__":
+    train_main()

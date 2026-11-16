@@ -1,5 +1,18 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 import random
+import math
 from collections import namedtuple
 from typing import Any, Optional, Tuple, Union
 
@@ -13,6 +26,7 @@ from ddpm.utils.ops import extract
 from ddpm.utils.scheduler import linear_beta_schedule
 
 ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start"])
+ModelPredictionWithVariance = namedtuple("ModelPredictionWithVariance", ["pred_noise", "pred_x_start", "pred_log_variance"])
 
 __all__ = [
     "GaussianDiffusion",
@@ -25,7 +39,7 @@ class GaussianDiffusion(nn.Module):
             model: Any,
             image_size: Union[int, Tuple[int, int]],
             time_steps: int = 1000,
-            sampling_time_steps: int = 250,
+            sampling_time_steps: Optional[int] = 250,
             ddim_sampling_eta: float = 0.,
             offset_noise_strength: float = 0.,
             min_snr_loss_weight: bool = False,
@@ -46,11 +60,26 @@ class GaussianDiffusion(nn.Module):
             immiscible (bool, optional): Whether to use immiscible diffusion. Defaults to False.
         """
         super().__init__()
-        assert not model.in_channels != model.out_dim, "model must have the same number of channels as out_dim"
+        if model.out_dim not in (model.in_channels, 2 * model.in_channels):
+            raise ValueError("Model must output one v channel per input channel, optionally followed by learned variance channels")
+        if time_steps <= 20:
+            raise ValueError("linear beta schedule requires time_steps > 20")
+        if sampling_time_steps is not None and not 1 <= sampling_time_steps <= time_steps:
+            raise ValueError("sampling_time_steps must be between 1 and time_steps")
+        if not 0 <= ddim_sampling_eta <= 1:
+            raise ValueError("ddim_sampling_eta must be between 0 and 1")
+
+        self.config = {
+            "image_size": image_size, "time_steps": time_steps,
+            "sampling_time_steps": sampling_time_steps, "ddim_sampling_eta": ddim_sampling_eta,
+            "offset_noise_strength": offset_noise_strength, "min_snr_loss_weight": min_snr_loss_weight,
+            "min_snr_gamma": min_snr_gamma, "immiscible": immiscible,
+        }
 
         self.model = model
         self.in_channels = self.model.in_channels
         self.self_condition = self.model.self_condition
+        self.learned_variance = model.out_dim == 2 * model.in_channels
 
         # Ensure image_size is a tuple of two integers
         if isinstance(image_size, int):
@@ -91,7 +120,9 @@ class GaussianDiffusion(nn.Module):
         # Calculations for posterior q(x_{t-1} | x_t, x_0)
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
         register_buffer("posterior_variance", posterior_variance)
-        register_buffer("posterior_log_variance_clipped", torch.log(posterior_variance.clamp(min=1e-20)))
+        # At t=0 the true posterior is a delta; use t=1's variance for the decoder likelihood.
+        clipped_variance = torch.cat((posterior_variance[1:2], posterior_variance[1:]))
+        register_buffer("posterior_log_variance_clipped", torch.log(clipped_variance.clamp(min=1e-20)))
         register_buffer("posterior_mean_coef1", betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
         register_buffer("posterior_mean_coef2", (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
 
@@ -177,13 +208,16 @@ class GaussianDiffusion(nn.Module):
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: The model mean, posterior variance,
             posterior log variance, and predicted x_start tensors.
         """
-        preds = self.model_predictions(x, time_step, x_self_condition)
+        preds = self.model_predictions(x, time_step, x_self_condition, return_log_variance=True)
         x_start = preds.pred_x_start
 
         if clip_denoised:
             x_start.clamp_(-1., 1.)
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_start, x_time_step=x, time_step=time_step)
+        if preds.pred_log_variance is not None:
+            posterior_log_variance = preds.pred_log_variance
+            posterior_variance = posterior_log_variance.exp()
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     def p_sample(
@@ -209,6 +243,7 @@ class GaussianDiffusion(nn.Module):
 
         return pred_image, x_start
 
+    @torch.inference_mode()
     def p_sample_loop(self, shape: Tuple[int, ...], return_all_time_steps: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
         """Perform the sampling loop for the Gaussian diffusion process.
 
@@ -221,7 +256,7 @@ class GaussianDiffusion(nn.Module):
         """
         # Initialize the image with random noise
         image = torch.randn(shape, device=self.betas.device)
-        images = [image]
+        images = [image] if return_all_time_steps else None
 
         # Initialize x_start to None
         x_start = None
@@ -235,7 +270,8 @@ class GaussianDiffusion(nn.Module):
             image, x_start = self.p_sample(image, time_step, self_condition)
 
             # Append the current image to the list of images
-            images.append(image)
+            if images is not None:
+                images.append(image)
 
         # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
@@ -263,7 +299,7 @@ class GaussianDiffusion(nn.Module):
 
         # Initialize the image with random noise
         image = torch.randn(shape, device=self.betas.device)
-        images = [image]
+        images = [image] if return_all_time_steps else None
 
         # Initialize x_start to None
         x_start = None
@@ -281,7 +317,8 @@ class GaussianDiffusion(nn.Module):
             # If the next time step is the final step, set the image to x_start
             if next_time < 0:
                 image = x_start
-                images.append(image)
+                if images is not None:
+                    images.append(image)
                 continue
 
             # Calculate the alpha values for the current and next time steps
@@ -299,7 +336,8 @@ class GaussianDiffusion(nn.Module):
             image = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
             # Append the current image to the list of images
-            images.append(image)
+            if images is not None:
+                images.append(image)
 
         # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
@@ -337,7 +375,7 @@ class GaussianDiffusion(nn.Module):
         """
         x_start, noise = tuple(rearrange(t, "b ... -> b (...)") for t in (x_start, noise))
         dist = torch.cdist(x_start, noise)
-        _, assign = linear_sum_assignment(dist.cpu())
+        _, assign = linear_sum_assignment(dist.detach().cpu())
         out = torch.from_numpy(assign).to(dist.device)
 
         return out
@@ -355,10 +393,6 @@ class GaussianDiffusion(nn.Module):
         """
         if noise is None:
             noise = torch.randn_like(x_start, device=x_start.device)
-
-        if self.immiscible:
-            assign = self.noise_assignment(x_start, noise)
-            noise = noise[assign]
 
         return (
                 extract(self.sqrt_alphas_cumprod, time_step, x_start.shape) * x_start +
@@ -418,8 +452,9 @@ class GaussianDiffusion(nn.Module):
             x: torch.Tensor,
             time_step: torch.Tensor,
             self_condition: Optional[torch.Tensor] = None,
-            clip_x_start: bool = False
-    ) -> ModelPrediction:
+            clip_x_start: bool = False,
+            return_log_variance: bool = False,
+    ) -> Union[ModelPrediction, ModelPredictionWithVariance]:
         """Generate model predictions for the Gaussian Diffusion process.
 
         Args:
@@ -427,11 +462,16 @@ class GaussianDiffusion(nn.Module):
             time_step (torch.Tensor): The time steps tensor.
             self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
             clip_x_start (bool, optional): Whether to clip the predicted x_start. Defaults to False.
+            return_log_variance (bool): Include the optional learned log variance.
 
         Returns:
             ModelPrediction: The predicted noise and x_start tensors.
         """
         model_output = self.model(x, time_step, self_condition)
+        log_variance = None
+        if self.learned_variance:
+            model_output, variance_values = model_output.chunk(2, dim=1)
+            log_variance = self.prediction_log_variance(variance_values, time_step, x.shape)
 
         x_start = self.prediction_start_from_latent_var(x, time_step, model_output)
         if clip_x_start:
@@ -439,7 +479,40 @@ class GaussianDiffusion(nn.Module):
 
         pred_noise = self.prediction_noise_from_start(x, time_step, x_start)
 
+        if return_log_variance:
+            return ModelPredictionWithVariance(pred_noise, x_start, log_variance)
         return ModelPrediction(pred_noise, x_start)
+
+    def prediction_log_variance(self, values: torch.Tensor, time_step: torch.Tensor, shape: torch.Size) -> torch.Tensor:
+        """Interpolate in log space between the posterior and forward variances."""
+        lower = extract(self.posterior_log_variance_clipped, time_step, shape)
+        upper = extract(self.betas.log(), time_step, shape)
+        return lower + values.sigmoid() * (upper - lower)
+
+    def variance_loss(self, x_start: torch.Tensor, x_noisy: torch.Tensor, time_step: torch.Tensor,
+                      predicted_v: torch.Tensor, variance_values: torch.Tensor) -> torch.Tensor:
+        """Hybrid variational-bound term for a learned reverse-process variance."""
+        x_start, x_noisy = x_start.float(), x_noisy.float()
+        predicted_v, variance_values = predicted_v.float(), variance_values.float()
+        true_mean, _, true_logvar = self.q_posterior(x_start, x_noisy, time_step)
+        predicted_start = self.prediction_start_from_latent_var(x_noisy, time_step, predicted_v.detach())
+        model_mean, _, _ = self.q_posterior(predicted_start, x_noisy, time_step)
+        model_logvar = self.prediction_log_variance(variance_values, time_step, x_noisy.shape)
+        kl = 0.5 * (model_logvar - true_logvar - 1 +
+                    (true_logvar - model_logvar).exp() +
+                    (true_mean - model_mean).square() * (-model_logvar).exp())
+
+        # Discretized Gaussian decoder likelihood for 8-bit images in [-1, 1].
+        centered = x_start - model_mean
+        inv_std = (-0.5 * model_logvar).exp()
+        plus = 0.5 * (1 + torch.erf((centered + 1 / 255) * inv_std / math.sqrt(2)))
+        minus = 0.5 * (1 + torch.erf((centered - 1 / 255) * inv_std / math.sqrt(2)))
+        probability = torch.where(x_start < -0.999, plus,
+                                  torch.where(x_start > 0.999, 1 - minus, plus - minus))
+        decoder_nll = -probability.clamp(min=1e-12).log()
+        kl = reduce(kl, "b ... -> b", "mean") / math.log(2)
+        decoder_nll = reduce(decoder_nll, "b ... -> b", "mean") / math.log(2)
+        return torch.where(time_step == 0, decoder_nll, kl).mean() * (self.num_time_steps / 1000.)
 
     def p_losses(
             self,
@@ -465,7 +538,10 @@ class GaussianDiffusion(nn.Module):
         offset_noise_strength = self.offset_noise_strength if offset_noise_strength is None else offset_noise_strength
         if offset_noise_strength > 0.:
             offset_noise = torch.randn(x_start.shape[:2], device=self.betas.device)
-            noise += offset_noise_strength * rearrange(offset_noise, "b c -> b c 1 1")
+            noise = noise + offset_noise_strength * rearrange(offset_noise, "b c -> b c 1 1")
+
+        if self.immiscible:
+            noise = noise[self.noise_assignment(x_start, noise)]
 
         # Noise sample
         x_noisy = self.q_sample(x_start=x_start, time_step=time_step, noise=noise)
@@ -477,12 +553,18 @@ class GaussianDiffusion(nn.Module):
 
         # Predict and take gradient step
         model_output = self.model(x_noisy, time_step, x_self_condition)
+        variance_values = None
+        if self.learned_variance:
+            model_output, variance_values = model_output.chunk(2, dim=1)
         predicted_v = self.prediction_latent_var(x_start, time_step, noise)
 
         loss = F_torch.mse_loss(model_output, predicted_v, reduction="none")
         loss = reduce(loss, "b ... -> b", "mean")
         loss_weight = extract(self.loss_weight, time_step, loss.shape)
         loss = (loss * loss_weight).mean()
+
+        if variance_values is not None:
+            loss = loss + self.variance_loss(x_start, x_noisy, time_step, model_output, variance_values)
 
         return loss
 
@@ -502,7 +584,9 @@ class GaussianDiffusion(nn.Module):
         assert x1.shape == x2.shape, "Input images must have the same shape"
 
         # Set the time step to the last time step if not provided
-        time_step = self.num_timesteps - 1 if time_step is None else time_step
+        time_step = self.num_time_steps - 1 if time_step is None else time_step
+        if not 0 <= time_step < self.num_time_steps:
+            raise ValueError("time_step must be within the diffusion schedule")
 
         # Create a tensor filled with the time step value
         t_batched = torch.full((x1.shape[0],), time_step, device=x1.device)
@@ -515,7 +599,7 @@ class GaussianDiffusion(nn.Module):
 
         x_start = None
         # Reverse diffusion process to generate the interpolated image
-        for i in reversed(range(0, time_step)):
+        for i in reversed(range(time_step + 1)):
             self_condition = x_start if self.self_condition else None
             image, x_start = self.p_sample(image, i, self_condition)
 

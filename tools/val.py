@@ -1,15 +1,17 @@
 # Copyright (c) Lornatang. All rights reserved.
-from datetime import datetime
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+from ddpm.cli import validate_main
 
-from ddpm.engine.validator import Validator
-
-validator = Validator(
-    "./results/train/cifar10/weights/last.pkl",
-    "./datasets/cifar10/train",
-    256,
-    num_fid_samples=50000,
-    fid_stat_path="./datasets/stats/cifar10_train_r32.npz",
-    save_dir=f"./results/val/cifar10-r32-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-    device="0",
-)
-validator.validate()
+if __name__ == "__main__":
+    validate_main()

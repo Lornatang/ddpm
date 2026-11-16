@@ -1,8 +1,19 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 import os
 import random
 
-import cv2
 import numpy as np
 import torch
 import torch.backends.mps
@@ -23,8 +34,6 @@ os.environ["NUMEXPR_MAX_THREADS"] = str(NUM_THREADS)
 torch.set_printoptions(linewidth=320, precision=4, profile="default")
 # Set NumPy print options, adjusting output line width and float format
 np.set_printoptions(linewidth=320, formatter={"float_kind": "{:11.5g}".format})
-# Set the number of threads used by OpenCV
-cv2.setNumThreads(NUM_THREADS)
 
 
 def set_seed_everything(seed: int, deterministic: bool = False) -> None:

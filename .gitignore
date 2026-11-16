@@ -33,8 +33,5 @@ model_ts*.txt
 _darcs
 
 # project dirs
-*.sh
-*.yaml
 datasets/*
 results/*
-tools/*

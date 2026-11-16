@@ -18,7 +18,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Copyright (c) Apache License v2.0. All rights reserved.",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -34,26 +34,24 @@ dependencies = [
     "einops",
     "numpy>=2.0.0",
     "pytorch_fid",
+    "PyYAML",
+    "scipy",
     "torch>=2.6.0",
     "torchvision>=0.21.0",
     "tqdm",
 ]
 
 [project.scripts]
-pyproject-build = "build.__main__:entrypoint"
+ddpm-train = "ddpm.cli:train_main"
+ddpm-sample = "ddpm.cli:inference_main"
+ddpm-validate = "ddpm.cli:validate_main"
 
-# Tools settings
-[tool.setuptools]
-packages = { find = { where = ["."], include = ["ddpm", "ddpm.*"] } }
-
-[tool.setuptools.dynamic]
-version = { attr = "ddpm.__version__" }
+[project.optional-dependencies]
+test = ["pytest"]
 
 [tool.pytest.ini_options]
-addopts = "--doctest-modules --durations=30 --color=yes"
-markers = [
-    "slow: skip slow tests unless --slow is set",
-]
+testpaths = ["tests"]
+addopts = "--durations=20"
 norecursedirs = [".git", "dist", "build"]
 
 [tool.isort]

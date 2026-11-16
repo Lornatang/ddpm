@@ -1,4 +1,16 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 from functools import partial
 from typing import Optional, Tuple
 
@@ -46,18 +58,30 @@ class UNet(nn.Module):
             dropout (float): Dropout rate. Defaults to 0.
             attn_dim_head (int): Dimension of each attention head. Defaults to 32.
             attn_heads (int): Number of attention heads. Defaults to 4.
-            flash (bool): Whether to flash attention. Defaults to False.
+            flash (bool): Whether to use SDPA with automatic backend selection. Defaults to False.
         """
         super().__init__()
+        if dim < 4 or dim % 2:
+            raise ValueError("dim must be an even integer of at least 4")
+        if not channels_multipliers:
+            raise ValueError("channels_multipliers must not be empty")
+        self.config = {
+            "dim": dim, "init_dim": init_dim, "out_dim": out_dim,
+            "in_channels": in_channels, "channels_multipliers": tuple(channels_multipliers),
+            "self_condition": self_condition, "learned_variance": learned_variance,
+            "sinusoidal_pos_emb_theta": sinusoidal_pos_emb_theta, "dropout": dropout,
+            "attn_dim_head": attn_dim_head, "attn_heads": attn_heads, "flash": flash,
+        }
         self.dim = dim
         self.in_channels = in_channels
         self.self_condition = self_condition
+        requested_out_dim = out_dim
 
-        in_channels = in_channels * (2 if self_condition else 1)
+        input_dim = in_channels * (2 if self_condition else 1)
         init_dim = dim if init_dim is None else init_dim
-        self.init_conv = nn.Conv2d(in_channels, init_dim, (7, 7), padding=(3, 3))
+        self.init_conv = nn.Conv2d(input_dim, init_dim, (7, 7), padding=(3, 3))
 
-        dim_list = [dim, *map(lambda m: dim * m, channels_multipliers)]
+        dim_list = [init_dim, *map(lambda m: dim * m, channels_multipliers)]
         out_channel_list = list(zip(dim_list[:-1], dim_list[1:]))
 
         # time embedding
@@ -130,7 +154,7 @@ class UNet(nn.Module):
             ]))
 
         default_out_dim = in_channels * (1 if not learned_variance else 2)
-        self.out_dim = out_dim if default_out_dim is None else default_out_dim
+        self.out_dim = default_out_dim if requested_out_dim is None else requested_out_dim
 
         self.final_res_block = residual_block(init_dim * 2, init_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)

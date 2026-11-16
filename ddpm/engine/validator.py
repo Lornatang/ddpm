@@ -1,15 +1,25 @@
 # Copyright (c) Lornatang. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
 import uuid
 from pathlib import Path
 from typing import Union
 
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from torchvision import utils as vutils
 
-from ddpm.data.base import BaseImageFolder
-from ddpm.data.utils import cycle_data_loader
+from ddpm.data.base import BaseImageFolder, image_transform
 from ddpm.evaluation.fid_metrics import FIDMetrics
 from ddpm.utils.checkpoint import load_checkpoint
 from ddpm.utils.events import LOGGER
@@ -30,6 +40,8 @@ class Validator:
             fid_stat_path: Union[Path, str] = "./datasets/stats/val.npz",
             save_dir: Union[Path, str] = "./results/val",
             device: str = "0",
+            num_workers: int = 8,
+            feature_dims: int = 2048,
     ) -> None:
         """Initializes the Validator class for model evaluation.
 
@@ -56,14 +68,10 @@ class Validator:
         self.model.float()
 
         # Dataset and dataloader
-        transform = transforms.Compose([
-            transforms.Resize(self.model.image_size),
-            transforms.CenterCrop(self.model.image_size),
-            transforms.ToTensor()
-        ])
+        transform = image_transform(self.model.image_size)
         self.dataset = BaseImageFolder(root, transform)
-        data_loader = DataLoader(self.dataset, batch_size, False, num_workers=8, pin_memory=True, persistent_workers=True)
-        self.data_loader = cycle_data_loader(data_loader)
+        self.data_loader = DataLoader(self.dataset, batch_size, False, num_workers=num_workers,
+                                      pin_memory=self.device.type == "cuda", persistent_workers=num_workers > 0)
 
         # Metric computation
         self.fid_metrics = FIDMetrics(
@@ -73,6 +81,7 @@ class Validator:
             dataset_stat_path=self.fid_stat_path,
             num_samples=self.num_fid_samples,
             device=self.device,
+            feature_dims=feature_dims,
         )
 
     def validate(self) -> float:
