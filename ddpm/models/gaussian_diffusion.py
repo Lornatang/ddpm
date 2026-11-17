@@ -46,18 +46,22 @@ class GaussianDiffusion(nn.Module):
             min_snr_gamma: int = 5,
             immiscible: bool = False
     ) -> None:
-        """Initializes the GaussianDiffusion model.
+        """Initialize the forward diffusion process and reverse sampler.
 
         Args:
             model (Any): The neural network model used for diffusion.
             image_size (Union[int, Tuple[int, int]]): The size of the input images.
             time_steps (int, optional): The number of time steps for the diffusion process. Defaults to 1000.
-            sampling_time_steps (int, optional): The number of time steps for sampling. Defaults to 250.
-            ddim_sampling_eta (float, optional): The eta value for ddim sampling. Defaults to 0.
+            sampling_time_steps (int | None, optional): Number of sampling steps. Defaults to 250; ``None`` uses
+                all diffusion steps and selects DDPM sampling.
+            ddim_sampling_eta (float, optional): DDIM stochasticity in ``[0, 1]``. Defaults to 0.
             offset_noise_strength (float, optional): The strength of the offset noise. Defaults to 0.
             min_snr_loss_weight (bool, optional): Whether to use minimum SNR loss weight. Defaults to False.
             min_snr_gamma (int, optional): The gamma value for minimum SNR. Defaults to 5.
             immiscible (bool, optional): Whether to use immiscible diffusion. Defaults to False.
+
+        Raises:
+            ValueError: If model output channels or diffusion/sampling schedule parameters are invalid.
         """
         super().__init__()
         if model.out_dim not in (model.in_channels, 2 * model.in_channels):
@@ -87,7 +91,7 @@ class GaussianDiffusion(nn.Module):
         assert isinstance(image_size, (tuple, list)) and len(image_size) == 2, "image size must be an integer or a tuple/list of two integers"
         self.image_size = image_size
 
-        # Generate beta schedule using sigmoid function
+        # Generate the linear beta schedule.
         betas = linear_beta_schedule(time_steps)
 
         alphas = 1. - betas
@@ -143,9 +147,9 @@ class GaussianDiffusion(nn.Module):
         """Forward pass for the Gaussian Diffusion model.
 
         Args:
-            image (torch.Tensor): Input image tensor of shape (batch_size, channels, height, width).
-            *args: Additional arguments.
-            **kwargs: Additional keyword arguments.
+            image (torch.Tensor): Input image tensor of shape ``(batch_size, channels, height, width)``, normally in ``[-1, 1]``.
+            *args (Any): Positional arguments forwarded to ``p_losses``.
+            **kwargs (Any): Keyword arguments forwarded to ``p_losses``.
 
         Returns:
             torch.Tensor: The computed loss for the input batch of images.
@@ -205,8 +209,8 @@ class GaussianDiffusion(nn.Module):
             clip_denoised (bool, optional): Whether to clip the predicted x_start. Defaults to True.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: The model mean, posterior variance,
-            posterior log variance, and predicted x_start tensors.
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: Reverse-process mean, variance,
+                log variance, and predicted starting image. Variance may be learned by the model.
         """
         preds = self.model_predictions(x, time_step, x_self_condition, return_log_variance=True)
         x_start = preds.pred_x_start
@@ -231,7 +235,7 @@ class GaussianDiffusion(nn.Module):
         Args:
             x (torch.Tensor): The input tensor.
             time_step (int): The current time step.
-            x_self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
+            x_self_condition (torch.Tensor | None): Self-conditioning tensor, or ``None`` when unavailable.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: The predicted image tensor and the predicted starting image tensor.
@@ -245,14 +249,14 @@ class GaussianDiffusion(nn.Module):
 
     @torch.inference_mode()
     def p_sample_loop(self, shape: Tuple[int, ...], return_all_time_steps: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
-        """Perform the sampling loop for the Gaussian diffusion process.
+        """Perform the DDPM reverse-sampling loop.
 
         Args:
             shape (Tuple[int, ...]): The shape of the tensor to be sampled.
-            return_all_time_steps (bool, optional): Whether to return the samples from all time steps. Defaults to False.
+            return_all_time_steps (bool, optional): Stack the initial noise and all intermediate samples. Defaults to ``False``.
 
         Returns:
-            Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
+            torch.Tensor: Final image batch, or a tensor with an added time dimension when all steps are requested.
         """
         # Initialize the image with random noise
         image = torch.randn(shape, device=self.betas.device)
@@ -275,22 +279,21 @@ class GaussianDiffusion(nn.Module):
 
         # Return the final image or all images depending on the flag
         out = image if not return_all_time_steps else torch.stack(images, dim=1)
-        # Normalize the output to the range [0, 1]
+        # Map the model's [-1, 1] scale to the image scale.
         out = (out + 1.) * 0.5
 
         return out
 
     @torch.inference_mode()
     def ddim_sample(self, shape: Tuple[int, ...], return_all_time_steps: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
-        """
-        Perform the sampling loop using the Denoising Diffusion Implicit Model (DDIM) algorithm.
+        """Perform the DDIM reverse-sampling loop.
 
         Args:
             shape (Tuple[int, ...]): The shape of the tensor to be sampled.
-            return_all_time_steps (bool, optional): Whether to return the samples from all time steps. Defaults to False.
+            return_all_time_steps (bool, optional): Stack the initial noise and all intermediate samples. Defaults to ``False``.
 
         Returns:
-            Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
+            torch.Tensor: Final image batch, or a tensor with an added time dimension when all steps are requested.
         """
         # Define the time steps for DDIM sampling
         time_step = torch.linspace(-1, self.num_time_steps - 1, steps=self.sampling_time_steps + 1)
@@ -351,10 +354,11 @@ class GaussianDiffusion(nn.Module):
 
         Args:
             batch_size (int, optional): The number of samples to generate. Defaults to 16.
-            return_all_time_steps (bool, optional): Whether to return the samples from all time steps. Defaults to False.
+            return_all_time_steps (bool, optional): Stack the initial noise and all intermediate samples. Defaults to ``False``.
 
         Returns:
-            Union[torch.Tensor, Tuple[torch.Tensor, ...]]: The final sampled tensor, or a tuple of tensors from all time steps if `return_all_time_steps` is True.
+            torch.Tensor: Final images with shape ``(batch, channels, height, width)``, or a trajectory with shape
+                ``(batch, steps + 1, channels, height, width)`` when all steps are requested.
         """
         (height, width), channels = self.image_size, self.in_channels
         sample_func = self.ddim_sample if self.is_ddim_sampling else self.p_sample_loop
@@ -364,14 +368,14 @@ class GaussianDiffusion(nn.Module):
 
     @staticmethod
     def noise_assignment(x_start: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        """Assign noise to the starting image tensor using the linear sum assignment method.
+        """Find the minimum-distance assignment between images and noise samples.
 
         Args:
             x_start (torch.Tensor): The starting image tensor.
             noise (torch.Tensor): The noise tensor.
 
         Returns:
-            torch.Tensor: The assigned noise tensor.
+            torch.Tensor: Noise indices in the order assigned to the input images.
         """
         x_start, noise = tuple(rearrange(t, "b ... -> b (...)") for t in (x_start, noise))
         dist = torch.cdist(x_start, noise)
@@ -400,11 +404,11 @@ class GaussianDiffusion(nn.Module):
         )
 
     def prediction_latent_var(self, x_start: torch.Tensor, latent_var: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        """Prediction the latent variable from the starting image tensor and noise.
+        """Calculate the velocity target from the starting image, time steps, and noise.
 
         Args:
             x_start (torch.Tensor): The starting image tensor.
-            latent_var (torch.Tensor): The latent variable tensor.
+            latent_var (torch.Tensor): Per-image diffusion time-step indices.
             noise (torch.Tensor): The noise tensor.
 
         Returns:
@@ -416,7 +420,7 @@ class GaussianDiffusion(nn.Module):
         )
 
     def prediction_start_from_latent_var(self, x_time_step: torch.Tensor, time_step: torch.Tensor, latent_var: torch.Tensor) -> torch.Tensor:
-        """Prediction the starting image tensor from the latent variable `v`.
+        """Predict the starting image from the noisy image and velocity ``v``.
 
         Args:
             x_time_step (torch.Tensor): The noisy image tensor at time step `t`.
@@ -432,7 +436,7 @@ class GaussianDiffusion(nn.Module):
         )
 
     def prediction_noise_from_start(self, x_time_step: torch.Tensor, time_step: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
-        """Prediction the noise from the starting image tensor.
+        """Predict the noise from the noisy and reconstructed starting images.
 
         Args:
             x_time_step (torch.Tensor): The noisy image tensor at time step `t`.
@@ -462,10 +466,10 @@ class GaussianDiffusion(nn.Module):
             time_step (torch.Tensor): The time steps tensor.
             self_condition (Optional[torch.Tensor], optional): The self-conditioning tensor. Defaults to None.
             clip_x_start (bool, optional): Whether to clip the predicted x_start. Defaults to False.
-            return_log_variance (bool): Include the optional learned log variance.
+            return_log_variance (bool, optional): Include the learned log variance when available. Defaults to ``False``.
 
         Returns:
-            ModelPrediction: The predicted noise and x_start tensors.
+            ModelPrediction | ModelPredictionWithVariance: Predicted noise and starting image, optionally with log variance.
         """
         model_output = self.model(x, time_step, self_condition)
         log_variance = None
@@ -484,14 +488,34 @@ class GaussianDiffusion(nn.Module):
         return ModelPrediction(pred_noise, x_start)
 
     def prediction_log_variance(self, values: torch.Tensor, time_step: torch.Tensor, shape: torch.Size) -> torch.Tensor:
-        """Interpolate in log space between the posterior and forward variances."""
+        """Interpolate in log space between the posterior and forward variances.
+
+        Args:
+            values (torch.Tensor): Model-predicted variance interpolation logits.
+            time_step (torch.Tensor): Per-image diffusion time-step indices.
+            shape (torch.Size): Image shape used to broadcast schedule values.
+
+        Returns:
+            torch.Tensor: Predicted reverse-process log variance.
+        """
         lower = extract(self.posterior_log_variance_clipped, time_step, shape)
         upper = extract(self.betas.log(), time_step, shape)
         return lower + values.sigmoid() * (upper - lower)
 
     def variance_loss(self, x_start: torch.Tensor, x_noisy: torch.Tensor, time_step: torch.Tensor,
                       predicted_v: torch.Tensor, variance_values: torch.Tensor) -> torch.Tensor:
-        """Hybrid variational-bound term for a learned reverse-process variance."""
+        """Compute the variational-bound term for learned reverse-process variance.
+
+        Args:
+            x_start (torch.Tensor): Original images in ``[-1, 1]``.
+            x_noisy (torch.Tensor): Noisy images at the selected time steps.
+            time_step (torch.Tensor): Per-image diffusion time-step indices.
+            predicted_v (torch.Tensor): Predicted velocity; detached for this loss term.
+            variance_values (torch.Tensor): Model-predicted variance interpolation logits.
+
+        Returns:
+            torch.Tensor: Scalar variational-bound loss in bits, scaled by the schedule length.
+        """
         x_start, x_noisy = x_start.float(), x_noisy.float()
         predicted_v, variance_values = predicted_v.float(), variance_values.float()
         true_mean, _, true_logvar = self.q_posterior(x_start, x_noisy, time_step)
@@ -575,11 +599,15 @@ class GaussianDiffusion(nn.Module):
         Args:
             x1 (torch.Tensor): The first image tensor.
             x2 (torch.Tensor): The second image tensor.
-            time_step (Optional[int], optional): The time step to start the interpolation. Defaults to the last time step.
+            time_step (int | None, optional): Starting diffusion time step. Defaults to ``None``, which uses the last step.
             lambda_ratio (float, optional): The interpolation ratio between x1 and x2. Defaults to 0.5.
 
         Returns:
             torch.Tensor: The interpolated image tensor.
+
+        Raises:
+            AssertionError: If the input image shapes differ.
+            ValueError: If ``time_step`` is outside the diffusion schedule.
         """
         assert x1.shape == x2.shape, "Input images must have the same shape"
 

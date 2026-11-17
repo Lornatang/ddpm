@@ -25,6 +25,8 @@ __all__ = [
 
 
 class BaseImageFolder(Dataset):
+    """Load images recursively from a directory without assigning class labels."""
+
     def __init__(
             self,
             root: Union[str, Path],
@@ -32,6 +34,18 @@ class BaseImageFolder(Dataset):
             extensions: Optional[Tuple[str, ...]] = IMG_EXTENSIONS,
             loader: Callable[[str], Any] = default_loader,
     ) -> None:
+        """Discover image paths and configure preprocessing.
+
+        Args:
+            root (str | Path): Directory searched recursively for images.
+            transform (Callable | None, optional): Transform applied to each loaded image. Defaults to ``None``.
+            extensions (Tuple[str, ...], optional): Accepted image suffixes, compared case-insensitively.
+                Defaults to torchvision's ``IMG_EXTENSIONS``.
+            loader (Callable, optional): Function used to load each image path. Defaults to torchvision's ``default_loader``.
+
+        Raises:
+            FileNotFoundError: If ``root`` is not an existing directory.
+        """
         super().__init__()
         self.root = Path(root)
         self.transform = transform
@@ -53,12 +67,13 @@ class BaseImageFolder(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int) -> Any:
-        """
+        """Load one image and apply the configured transform.
+
         Args:
-            index (int): Index
+            index (int): Index into the sorted image paths.
 
         Returns:
-            Any: where target is class_index of the target class.
+            Any: Loaded image or transformed sample; no class label is returned.
         """
         path = self.samples[index]
         sample = self.loader(path)
@@ -76,11 +91,27 @@ class ReproducibleImageFolder(BaseImageFolder):
     """
 
     def __init__(self, *args, seed: int = 0, augment: bool = False, **kwargs):
+        """Configure deterministic per-image horizontal flips.
+
+        Args:
+            *args (Any): Positional arguments forwarded to ``BaseImageFolder``.
+            seed (int, optional): Seed used to derive the flip decision. Defaults to 0.
+            augment (bool, optional): Whether to apply deterministic horizontal flips. Defaults to ``False``.
+            **kwargs (Any): Keyword arguments forwarded to ``BaseImageFolder``.
+        """
         super().__init__(*args, **kwargs)
         self.seed = seed
         self.augment = augment
 
     def __getitem__(self, key):
+        """Load an image and apply its epoch-specific flip decision.
+
+        Args:
+            key (Tuple[int, int]): Image index and epoch supplied by the sampler.
+
+        Returns:
+            Any: Transformed image, optionally flipped horizontally.
+        """
         index, epoch = key
         sample = super().__getitem__(index)
         if self.augment:
@@ -97,7 +128,16 @@ class ReproducibleImageFolder(BaseImageFolder):
 
 
 def image_transform(image_size, *, augment: bool = False, normalize: bool = False):
-    """Build matching train/evaluation image preprocessing pipelines."""
+    """Build the image preprocessing pipeline used for training or evaluation.
+
+    Args:
+        image_size (int | Tuple[int, int]): Resize and center-crop target.
+        augment (bool, optional): Apply a random horizontal flip. Defaults to ``False``.
+        normalize (bool, optional): Map RGB tensor values from ``[0, 1]`` to ``[-1, 1]``. Defaults to ``False``.
+
+    Returns:
+        transforms.Compose: Transform producing a cropped image tensor.
+    """
     steps = [transforms.Resize(image_size), transforms.CenterCrop(image_size)]
     if augment:
         steps.append(transforms.RandomHorizontalFlip())

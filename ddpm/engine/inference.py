@@ -39,14 +39,17 @@ class Inferencer:
             save_dir: Union[Path, str] = "./results/inference",
             device: str = "0",
     ) -> None:
-        """Initializes the Inferencer class for model inference.
+        """Configure image generation from a trusted checkpoint.
 
         Args:
-            model_weights_path (Union[Path, str]): Path to the pre-trained model weights.
-            batch_size (int, optional): Batch size for inference. Defaults to 256.
-            num_samples (int, optional): Number of samples to generate for evaluation. Defaults to 8.
-            save_dir (Union[Path, str], optional): Directory to save the validation results. Defaults to './results/val'.
-            device (str, optional): The device to use for computation. Defaults to '0' (CUDA).
+            model_weights_path (Path | str): Path to a trusted checkpoint; EMA weights are preferred.
+            batch_size (int, optional): Target global sampling batch size. Defaults to 256.
+            num_samples (int, optional): Total number of images to generate across ranks. Defaults to 100.
+            save_dir (Path | str, optional): Output directory for images. Defaults to ``"./results/inference"``.
+            device (str, optional): Device specification. Defaults to ``"0"``; torchrun selects CUDA by local rank.
+
+        Raises:
+            ValueError: If the sample count or batch size is not positive.
         """
         if num_samples < 1 or batch_size < 1:
             raise ValueError("num_samples and batch_size must be positive")
@@ -67,7 +70,11 @@ class Inferencer:
             raise
 
     def inference(self) -> None:
-        """Perform model inference and save samples."""
+        """Generate the requested number of images and save them across ranks.
+
+        The target batch is divided between ranks, with at least one sample per
+        active rank batch. The slowest rank determines the reported duration.
+        """
         group = self.distributed
         count = self.num_samples // group.world_size + (group.rank < self.num_samples % group.world_size)
         batch_size = max(1, self.batch_size // group.world_size)

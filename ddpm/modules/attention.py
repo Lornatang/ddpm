@@ -41,7 +41,7 @@ class Attention(nn.Module):
             heads (int, optional): Number of attention heads. Defaults to 4.
             dim_head (int, optional): Dimension of each attention head. Defaults to 32.
             num_mem_kv (int, optional): Number of memory key-value pairs. Defaults to 4.
-            flash (bool, optional): Whether to use flash attention. Defaults to False.
+            flash (bool, optional): Use PyTorch SDPA with automatic backend selection. Defaults to ``False``.
         """
         super().__init__()
         self.heads: int = heads

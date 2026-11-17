@@ -21,7 +21,18 @@ from torch import distributed as dist
 
 
 class DistributedInference:
+    """Select a local device and manage the process group for sampling or evaluation."""
+
     def __init__(self, device):
+        """Configure the requested device and any torchrun process group.
+
+        Args:
+            device (str | torch.device): CPU, MPS, or CUDA device specification. Multi-rank CUDA runs use
+                ``LOCAL_RANK`` as the visible device index.
+
+        Raises:
+            ValueError: If the rank, world size, CUDA device, or existing process group is incompatible.
+        """
         self.rank = int(os.environ.get("RANK", "0"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         self.world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -61,5 +72,6 @@ class DistributedInference:
         torch.manual_seed((torch.initial_seed() + self.rank) % (1 << 63))
 
     def close(self):
+        """Destroy the process group if this instance created it."""
         if self.owns_group and dist.is_initialized():
             dist.destroy_process_group()

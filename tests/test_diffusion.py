@@ -31,6 +31,7 @@ class DummyModel(nn.Module):
     self_condition = False
 
     def __init__(self):
+        """Initialize a lightweight prediction model and tensor-reference log."""
         super().__init__()
         self.weight = nn.Parameter(torch.tensor(0.0))
         self.fixed = None
@@ -38,6 +39,16 @@ class DummyModel(nn.Module):
         self.alive = []
 
     def forward(self, x, t, condition=None):
+        """Record the input and return either a fixed or weight-based prediction.
+
+        Args:
+            x (torch.Tensor): Noisy input image batch.
+            t (torch.Tensor): Diffusion time steps, accepted for interface compatibility.
+            condition (torch.Tensor | None, optional): Self-conditioning input. Defaults to ``None``.
+
+        Returns:
+            torch.Tensor: Fixed prediction when configured; otherwise the learnable weight broadcast over the input.
+        """
         self.refs.append(weakref.ref(x))
         self.alive.append(sum(ref() is not None for ref in self.refs))
         return torch.zeros_like(x) + self.weight if self.fixed is None else self.fixed

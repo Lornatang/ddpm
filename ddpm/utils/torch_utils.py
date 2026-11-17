@@ -26,13 +26,13 @@ __all__ = [
 
 
 def de_parallel(model: nn.Module) -> nn.Module:
-    """Remove the distributed state from a model.
+    """Return the underlying model from a parallel wrapper.
 
     Args:
         model (nn.Module): The PyTorch model.
 
     Returns:
-        nn.Module: The model without the distributed state.
+        nn.Module: Wrapped module for DataParallel or DistributedDataParallel, otherwise the original model.
     """
     return model.module if is_parallel(model) else model
 
@@ -51,27 +51,32 @@ def get_gpu_info(index: int) -> str:
 
 
 def is_parallel(model: nn.Module) -> bool:
-    """Check if the model is in a distributed state.
+    """Check whether the model uses a supported PyTorch parallel wrapper.
 
     Args:
         model (nn.Module): The PyTorch model.
 
     Returns:
-        bool: True if the model is distributed, False otherwise.
+        bool: ``True`` for DataParallel or DistributedDataParallel, otherwise ``False``.
     """
     return isinstance(model, (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel))
 
 
 def select_device(device: Union[str, torch.device] = "", batch_size: int = 0, verbose: bool = True) -> torch.device:
-    """Select the device index.
+    """Select a compute device and configure CUDA visibility for string inputs.
 
     Args:
-        device (Union[str, torch.device], optional): The device index, can be "cpu" or "0", "0,1", etc. Defaults to "".
-        batch_size (int, optional): The batch size. Defaults to 0.
-        verbose (bool, optional): Whether to print device information. Defaults to True.
+        device (str | torch.device, optional): Device such as ``"cpu"``, ``"mps"``, or CUDA indices such as
+            ``"0,1"``. Defaults to ``""`` for automatic selection. A ``torch.device`` is returned unchanged.
+        batch_size (int, optional): Global batch size used to validate multiple CUDA indices. Defaults to 0.
+        verbose (bool, optional): Log the selected device information. Defaults to ``True``.
 
     Returns:
-        torch.device: The selected device index.
+        torch.device: Selected device; CUDA indices are exposed through ``CUDA_VISIBLE_DEVICES`` and the return value is
+            ``cuda:0`` within that visible set.
+
+    Raises:
+        ValueError: If requested CUDA devices are unavailable or the batch size is incompatible with the device count.
     """
     # If the input is a torch.device object, return it directly
     if isinstance(device, torch.device):

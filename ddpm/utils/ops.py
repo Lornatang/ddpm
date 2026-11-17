@@ -23,15 +23,15 @@ __all__ = [
 
 
 def extract(x: torch.Tensor, sample_time: torch.Tensor, shape: torch.Size) -> torch.Tensor:
-    """Extracts values from a tensor `x` at indices specified by `sample_time` and reshapes the result.
+    """Gather per-sample schedule values and reshape them for broadcasting.
 
     Args:
-        x (torch.Tensor): The input tensor from which values are extracted.
-        sample_time (torch.Tensor): A tensor containing the indices at which to extract values from `x`.
-        shape (torch.Size): The desired shape of the output tensor.
+        x (torch.Tensor): One-dimensional schedule tensor.
+        sample_time (torch.Tensor): Per-sample time-step indices.
+        shape (torch.Size): Target tensor shape whose rank determines the broadcast dimensions.
 
     Returns:
-        torch.Tensor: The extracted and reshaped tensor.
+        torch.Tensor: Gathered values with shape ``(batch, 1, ..., 1)``.
     """
     b, *_ = sample_time.shape
     out = x.gather(-1, sample_time)
@@ -61,8 +61,8 @@ def save_yaml(file_path: Union[Path, str] = "opts.yaml", data: Dict = None) -> N
     """Save dictionary data to a YAML file.
 
     Args:
-        file_path (Union[Path, str]): Path where the YAML file will be saved. Defaults to "opts.yaml".
-        data (Dict, optional): Dictionary data to be saved. Defaults to None (empty dict).
+        file_path (Path | str, optional): Output YAML path. Defaults to ``"opts.yaml"``.
+        data (Dict | None, optional): Data to save. Defaults to ``None``, which writes an empty dictionary.
     """
     if data is None:
         data = {}

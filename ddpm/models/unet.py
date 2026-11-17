@@ -44,21 +44,25 @@ class UNet(nn.Module):
             attn_heads: int = 4,
             flash: bool = False,
     ) -> None:
-        """Initializes the UNet module.
+        """Initialize the time-conditioned U-Net used by the diffusion model.
 
         Args:
             dim (int): Base dimension for the model.
-            init_dim (Optional[int], optional): Initial dimension for the first convolution. Defaults to None.
-            out_dim (Optional[int], optional): Output dimension. Defaults to None.
-            in_channels (int): Number of input channels. Defaults to 3.
-            channels_multipliers (Tuple[int, ...]): Multipliers for the channels at each stage. Defaults to (1, 2, 2, 2).
-            self_condition (bool): Whether to use self-conditioning. Defaults to False.
-            learned_variance (bool): Whether to learn variance. Defaults to False.
-            sinusoidal_pos_emb_theta (int): Theta value for sinusoidal positional embedding. Defaults to 10000.
-            dropout (float): Dropout rate. Defaults to 0.
-            attn_dim_head (int): Dimension of each attention head. Defaults to 32.
-            attn_heads (int): Number of attention heads. Defaults to 4.
-            flash (bool): Whether to use SDPA with automatic backend selection. Defaults to False.
+            init_dim (int | None, optional): Initial convolution channels. Defaults to ``None``, which uses ``dim``.
+            out_dim (int | None, optional): Output channels. Defaults to ``None``, which uses ``in_channels`` or twice
+                that number when ``learned_variance`` is enabled.
+            in_channels (int, optional): Number of image channels. Defaults to 3.
+            channels_multipliers (Tuple[int, ...], optional): Channel multipliers by stage. Defaults to ``(1, 2, 2, 2)``.
+            self_condition (bool, optional): Enable self-conditioning input. Defaults to ``False``.
+            learned_variance (bool, optional): Predict variance channels when ``out_dim`` is not specified. Defaults to ``False``.
+            sinusoidal_pos_emb_theta (int, optional): Sinusoidal time-embedding base. Defaults to 10000.
+            dropout (float, optional): Residual-block dropout rate. Defaults to 0.
+            attn_dim_head (int, optional): Dimension of each attention head. Defaults to 32.
+            attn_heads (int, optional): Number of attention heads. Defaults to 4.
+            flash (bool, optional): Use PyTorch SDPA with automatic backend selection. Defaults to ``False``.
+
+        Raises:
+            ValueError: If ``dim`` is not an even integer of at least four or the channel multiplier tuple is empty.
         """
         super().__init__()
         if dim < 4 or dim % 2:
@@ -164,7 +168,7 @@ class UNet(nn.Module):
 
         Args:
             x (torch.Tensor): Input tensor.
-            sample_time (torch.Tensor): Time embedding tensor.
+            sample_time (torch.Tensor): Per-image diffusion time steps used to build the time embedding.
             self_conditioning_tensor (Optional[torch.Tensor], optional): Self-conditioning tensor. Defaults to None.
 
         Returns:

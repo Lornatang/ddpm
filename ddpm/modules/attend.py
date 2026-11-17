@@ -27,12 +27,13 @@ class Attend(nn.Module):
             flash: bool = False,
             scale: float = None
     ) -> None:
-        """Initializes the Attend module.
+        """Initialize scaled dot-product attention.
 
         Args:
             dropout (float, optional): Dropout rate. Defaults to 0.
-            flash (bool, optional): Whether to use flash attention. Defaults to False.
-            scale (float, optional): Scaling factor for attention. Defaults to None.
+            flash (bool, optional): Use PyTorch SDPA with automatic backend selection. Defaults to ``False``.
+            scale (float | None, optional): Attention scaling factor. Defaults to ``None``, which uses the
+                inverse square root of the head dimension.
         """
         super().__init__()
         self.dropout = dropout

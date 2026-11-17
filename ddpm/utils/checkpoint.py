@@ -23,7 +23,17 @@ __all__ = ["convert_optimizer_state_dict_to_half", "load_checkpoint", "model_con
 
 
 def convert_optimizer_state_dict_to_half(state_dict: dict) -> dict:
-    """Convert optimizer tensors in place; not suitable for resumable training."""
+    """Convert float32 optimizer state tensors to half precision in place.
+
+    Args:
+        state_dict (dict): Optimizer state dictionary containing a ``state`` mapping.
+
+    Returns:
+        dict: The same dictionary after conversion; optimizer step counters are unchanged.
+
+    Note:
+        Reduced-precision optimizer state is not suitable for exact training resumption.
+    """
     for state in state_dict["state"].values():
         for key, value in state.items():
             if key != "step" and isinstance(value, torch.Tensor) and value.dtype == torch.float32:
@@ -34,7 +44,16 @@ def convert_optimizer_state_dict_to_half(state_dict: dict) -> dict:
 def model_config(model: nn.Module) -> Optional[dict]:
     """Return a portable constructor description for the built-in diffusion model.
 
-    Custom models can still be resumed by passing an instance to load_checkpoint.
+    Custom models can still be resumed by passing an instance to ``load_checkpoint``.
+
+    Args:
+        model (nn.Module): Model to inspect for the built-in diffusion and U-Net types.
+
+    Returns:
+        dict | None: Constructor settings for a built-in model, or ``None`` for a custom model.
+
+    Note:
+        Missing configuration attributes are populated on supported legacy models.
     """
     from ddpm.models.gaussian_diffusion import GaussianDiffusion
     from ddpm.models.unet import UNet
@@ -46,7 +65,14 @@ def model_config(model: nn.Module) -> Optional[dict]:
 
 
 def _upgrade_legacy_model(model: nn.Module) -> None:
-    """Populate constructor metadata missing from the original pickled models."""
+    """Populate constructor metadata missing from original pickled models.
+
+    Args:
+        model (nn.Module): Model to update in place when it is a supported legacy diffusion model.
+
+    Raises:
+        ValueError: If legacy U-Net channel multipliers cannot be inferred.
+    """
     from ddpm.models.gaussian_diffusion import GaussianDiffusion
     from ddpm.models.unet import UNet
 
@@ -94,6 +120,19 @@ def load_checkpoint(
     """Load a checkpoint, reconstructing built-in models from their configuration.
 
     Legacy checkpoints contain pickled modules; only load files from trusted sources.
+
+    Args:
+        weights_path (str | Path): Path to the trusted checkpoint.
+        device (str | torch.device | None, optional): Device for the loaded model. Defaults to ``None``.
+        model (nn.Module | None, optional): Existing model for loading weights, required for custom state-dict
+            checkpoints without a built-in model configuration. Defaults to ``None``.
+        prefer_ema (bool, optional): Prefer EMA over online weights when both are available. Defaults to ``True``.
+
+    Returns:
+        Tuple[nn.Module, dict]: Float32 evaluation-mode model and the full checkpoint dictionary.
+
+    Raises:
+        ValueError: If model weights are absent or the model cannot be reconstructed without an instance.
     """
     checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
     state = checkpoint.get("ema") if prefer_ema else checkpoint.get("model")

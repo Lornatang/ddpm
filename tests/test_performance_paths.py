@@ -31,6 +31,7 @@ from test_workflow import assert_state_equal, make_trainer
 
 class MixedModel(nn.Module):
     def __init__(self):
+        """Create parameters and buffers with mixed floating-point and integer dtypes."""
         super().__init__()
         self.p = nn.Parameter(torch.tensor([1.0, -2.0]))
         self.double_param = nn.Parameter(torch.tensor([3.0, 4.0], dtype=torch.float64))
@@ -64,6 +65,15 @@ def test_foreach_ema_matches_scalar_reference_and_keeps_integer_buffers():
 
 
 def legacy_attention(layer, x):
+    """Run the attention layout used before the SDPA optimization.
+
+    Args:
+        layer (Attention): Attention module providing the weights.
+        x (torch.Tensor): Input feature map.
+
+    Returns:
+        torch.Tensor: Attention output using the previous tensor layout.
+    """
     b, _, h, w = x.shape
     qkv = layer.to_qkv(layer.norm(x)).chunk(3, dim=1)
     q, k, v = (rearrange(t, "b (h c) x y -> b h (x y) c", h=layer.heads) for t in qkv)

@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Two-process CPU worker used to exercise the real torchrun training path."""
+"""Two-process CPU or CUDA worker for torchrun training, sampling, and FID tests."""
 
 import os
 import sys
@@ -29,27 +29,51 @@ from ddpm.models.unet import UNet
 
 
 class ToyDiffusion(nn.Module):
+    """Record rank-local batches and provide a simple scalar training loss."""
     image_size = (8, 8)
 
     def __init__(self):
+        """Initialize the trainable weight and batch record."""
         super().__init__()
         self.weight = nn.Parameter(torch.tensor(0.5))
         self.batches = []
 
     def forward(self, x):
+        """Record a batch and return its randomly weighted loss.
+
+        Args:
+            x (torch.Tensor): Rank-local input batch.
+
+        Returns:
+            torch.Tensor: Scalar loss used to verify gradient averaging.
+        """
         factor = torch.rand((), device=x.device)
         self.batches.append((x.detach().clone(), factor.detach()))
         return (self.weight * x).square().mean() * factor
 
 
 class TestInception(nn.Module):
+    """Provide inexpensive deterministic feature vectors for distributed FID tests."""
     BLOCK_INDEX_BY_DIM = {64: 0, 192: 1, 768: 2, 2048: 3}
 
     def __init__(self, blocks):
+        """Initialize the fake extractor with the Inception-compatible signature.
+
+        Args:
+            blocks (list[int]): Requested Inception blocks; accepted for interface compatibility.
+        """
         super().__init__()
         self.batches = []
 
     def forward(self, samples):
+        """Return channel means padded to 64 features.
+
+        Args:
+            samples (torch.Tensor): RGB image batch.
+
+        Returns:
+            list[torch.Tensor]: One feature map batch with 64 channels.
+        """
         self.batches.append(len(samples))
         values = samples.mean(dim=(2, 3))
         values = torch.cat((values, torch.zeros(len(samples), 61, device=samples.device)), dim=1)
@@ -57,6 +81,7 @@ class TestInception(nn.Module):
 
 
 def main():
+    """Run a distributed training, sampling, or validation worker for the tests."""
     torch.set_num_threads(1)
     # Some local development builds ship torch without its distribution metadata,
     # so the new lazy backend registration entry point is unavailable.

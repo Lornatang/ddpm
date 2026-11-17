@@ -25,6 +25,9 @@ def cycle_data_loader(data_loader: DataLoader) -> Any:
 
     Args:
         data_loader (DataLoader): The DataLoader to cycle through.
+
+    Yields:
+        Any: The next batch from the loader.
     """
     while True:
         for data in data_loader:

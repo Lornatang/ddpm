@@ -34,6 +34,17 @@ from ddpm.utils.ema import ModelEMA
 
 
 def measure(function, warmup, repeats, device):
+    """Measure a synchronized CUDA workload and report its median latency.
+
+    Args:
+        function (Callable): Zero-argument workload to measure.
+        warmup (int): Number of untimed warmup iterations.
+        repeats (int): Number of timed iterations.
+        device (torch.device): CUDA device to synchronize.
+
+    Returns:
+        float: Median elapsed time per iteration in milliseconds.
+    """
     for _ in range(warmup):
         function()
     torch.cuda.synchronize(device)
@@ -47,6 +58,13 @@ def measure(function, warmup, repeats, device):
 
 
 def benchmark_ema(device, warmup, repeats):
+    """Print scalar and grouped EMA update timings for a representative model.
+
+    Args:
+        device (torch.device): CUDA device used for the benchmark.
+        warmup (int): Number of untimed iterations per implementation.
+        repeats (int): Number of timed iterations per implementation.
+    """
     model = GaussianDiffusion(UNet(128, channels_multipliers=(1, 2, 2, 2), flash=True), 32, 1000,
                               sampling_time_steps=250).to(device)
     ema = ModelEMA(model)
@@ -55,6 +73,7 @@ def benchmark_ema(device, warmup, repeats):
 
     @torch.no_grad()
     def previous():
+        """Apply the earlier per-tensor EMA update to the benchmark state."""
         for key, value in scalar.items():
             if value.is_floating_point():
                 value *= 0.999
@@ -66,6 +85,15 @@ def benchmark_ema(device, warmup, repeats):
 
 
 def old_attention(layer, x):
+    """Run attention using the previous query and memory-token layout.
+
+    Args:
+        layer (Attention): Attention module whose weights are used.
+        x (torch.Tensor): Input feature map.
+
+    Returns:
+        torch.Tensor: Attention output using the previous layout.
+    """
     batch, _, height, width = x.shape
     qkv = layer.to_qkv(layer.norm(x)).chunk(3, dim=1)
     q, k, v = (rearrange(t, "b (h c) x y -> b h (x y) c", h=layer.heads) for t in qkv)
@@ -76,10 +104,23 @@ def old_attention(layer, x):
 
 
 def benchmark_attention(device, warmup, repeats, batch):
+    """Print forward/backward timings for the previous and current attention layouts.
+
+    Args:
+        device (torch.device): CUDA device used for the benchmark.
+        warmup (int): Number of untimed iterations per implementation.
+        repeats (int): Number of timed iterations per implementation.
+        batch (int): Batch size for the attention input.
+    """
     layer = Attention(256, heads=4, dim_head=32, flash=True).to(device).train()
     x = torch.randn(batch, 256, 32, 32, device=device, requires_grad=True)
 
     def run(previous):
+        """Run one attention forward and backward pass.
+
+        Args:
+            previous (bool): Use the previous attention layout when ``True``.
+        """
         layer.zero_grad(set_to_none=True)
         x.grad = None
         with torch.autocast("cuda", dtype=torch.float16):
@@ -93,6 +134,12 @@ def benchmark_attention(device, warmup, repeats, batch):
 
 
 def benchmark_fid(count, dims):
+    """Compare NumPy and chunked FID statistics timings and numerical results.
+
+    Args:
+        count (int): Number of synthetic feature vectors.
+        dims (int): Number of dimensions per feature vector.
+    """
     features = np.random.default_rng(0).standard_normal((count, dims), dtype=np.float32)
     start = time.perf_counter()
     old_mean = features.mean(axis=0, dtype=np.float64)
@@ -107,6 +154,7 @@ def benchmark_fid(count, dims):
 
 
 def main():
+    """Parse benchmark options and run the CUDA and FID comparisons."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--warmup", type=int, default=5)

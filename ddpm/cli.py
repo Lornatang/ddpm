@@ -26,6 +26,13 @@ from ddpm.utils.envs import set_seed_everything
 
 
 def train_main(argv=None, *, default_preset="cifar10"):
+    """Parse training options and launch a single-process or torchrun trainer.
+
+    Args:
+        argv (list[str] | None, optional): Command-line arguments without the program name. Defaults to ``None``,
+            which reads arguments from ``sys.argv``.
+        default_preset (str, optional): Preset used when ``--preset`` is omitted. Defaults to ``"cifar10"``.
+    """
     parser = argparse.ArgumentParser(description="Train DDPM with torchrun")
     parser.add_argument("--data", required=True, help="Directory containing training images")
     parser.add_argument("--preset", choices=("cifar10", "celeba"), default=default_preset)
@@ -94,6 +101,12 @@ def train_main(argv=None, *, default_preset="cifar10"):
 
 
 def inference_main(argv=None):
+    """Parse sampling options and generate images from a checkpoint, preferring EMA weights.
+
+    Args:
+        argv (list[str] | None, optional): Command-line arguments without the program name. Defaults to ``None``,
+            which reads arguments from ``sys.argv``.
+    """
     parser = argparse.ArgumentParser(description="Generate images from a DDPM checkpoint")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", default="./results/inference")
@@ -105,6 +118,12 @@ def inference_main(argv=None):
 
 
 def validate_main(argv=None):
+    """Parse evaluation options and calculate FID for a checkpoint, preferring EMA weights.
+
+    Args:
+        argv (list[str] | None, optional): Command-line arguments without the program name. Defaults to ``None``,
+            which reads arguments from ``sys.argv``.
+    """
     parser = argparse.ArgumentParser(description="Evaluate a DDPM checkpoint using FID")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--data", required=True)
@@ -122,6 +141,11 @@ def validate_main(argv=None):
 
 
 def main():
+    """Dispatch the ``train``, ``sample``, or ``validate`` subcommand.
+
+    Raises:
+        SystemExit: If the subcommand is missing or unsupported.
+    """
     commands = {"train": train_main, "sample": inference_main, "validate": validate_main}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         raise SystemExit("Usage: python -m ddpm.cli {train,sample,validate} [options]")

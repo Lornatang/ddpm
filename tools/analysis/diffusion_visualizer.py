@@ -24,6 +24,11 @@ from ddpm.utils.torch_utils import select_device
 
 
 def get_opts() -> argparse.Namespace:
+    """Parse options for the forward-diffusion visualization.
+
+    Returns:
+        argparse.Namespace: Parsed command-line options.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-i", "--image-path",
@@ -78,7 +83,8 @@ def preprocess_image(
         normalize (bool, optional): Whether to normalize the image to [-1, 1]. Defaults to True.
 
     Returns:
-        np.ndarray: Preprocessed image tensor normalized to [-1, 1] with shape [C, H, W].
+        np.ndarray: RGB image array with shape ``(height, width, 3)`` in ``[-1, 1]`` when normalized,
+            or ``[0, 1]`` otherwise.
     """
     image = Image.open(image_path).convert("RGB")
 
@@ -102,13 +108,13 @@ def diffusion(
     """Apply the forward diffusion process to an input image.
 
     Args:
-        x_0 (np.ndarray): The input image tensor to be diffused, normalized to [-1, 1].
+        x_0 (np.ndarray): Input image array in ``[-1, 1]``, with shape ``(height, width, channels)``.
         num_time_steps (int): Total number of diffusion time steps.
         time_step (int): Current diffusion time step.
         device (torch.device): Device to run the computation on.
 
     Returns:
-        torch.Tensor: The diffused image tensor at time step t.
+        torch.Tensor: Diffused image at the selected time step, preserving the input shape.
     """
     x_0 = torch.tensor(x_0).to(device)
     betas = linear_beta_schedule(num_time_steps).to(device)
@@ -122,6 +128,7 @@ def diffusion(
 
 
 def main() -> None:
+    """Generate and save a grid of forward-diffusion samples."""
     opts = get_opts()
     image_path = Path(opts.image_path)
     output_path = Path(opts.output_path)

@@ -34,7 +34,21 @@ __all__ = ["FIDMetrics"]
 
 
 def frechet_distance(mean1, covariance1, mean2, covariance2, epsilon=1e-6) -> float:
-    """Compute FID using the scipy sqrtm API shared by old and new releases."""
+    """Compute the Fréchet distance between two feature distributions.
+
+    Args:
+        mean1 (np.ndarray): Mean vector for the first distribution.
+        covariance1 (np.ndarray): Covariance matrix for the first distribution.
+        mean2 (np.ndarray): Mean vector for the second distribution.
+        covariance2 (np.ndarray): Covariance matrix for the second distribution.
+        epsilon (float, optional): Diagonal offset used if the covariance square root is non-finite. Defaults to 1e-6.
+
+    Returns:
+        float: Non-negative Fréchet distance.
+
+    Raises:
+        ValueError: If statistic shapes differ or the square root has a large imaginary component.
+    """
     mean1, mean2 = np.atleast_1d(mean1), np.atleast_1d(mean2)
     covariance1, covariance2 = np.atleast_2d(covariance1), np.atleast_2d(covariance2)
     if mean1.shape != mean2.shape or covariance1.shape != covariance2.shape:
@@ -53,7 +67,18 @@ def frechet_distance(mean1, covariance1, mean2, covariance2, epsilon=1e-6) -> fl
 
 
 def feature_statistics(features: np.ndarray, chunk_size: int = 8192):
-    """Compute sample mean/covariance in float64 with bounded extra memory."""
+    """Compute the sample mean and covariance in float64 using bounded-size chunks.
+
+    Args:
+        features (np.ndarray): Two-dimensional array of feature vectors with shape ``(samples, dimensions)``.
+        chunk_size (int, optional): Maximum number of rows per covariance chunk. Defaults to 8192.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Feature mean and unbiased sample covariance.
+
+    Raises:
+        ValueError: If the array is not two-dimensional, contains fewer than two rows, or ``chunk_size`` is invalid.
+    """
     if features.ndim != 2 or len(features) < 2 or chunk_size < 1:
         raise ValueError("FID statistics require at least two feature vectors")
     count = 0
@@ -75,6 +100,8 @@ def feature_statistics(features: np.ndarray, chunk_size: int = 8192):
 
 
 class FIDMetrics:
+    """Calculate FID from real images and diffusion-model samples."""
+
     def __init__(
         self,
         data_loader: DataLoader,
@@ -85,6 +112,20 @@ class FIDMetrics:
         num_samples: int = 50000,
         feature_dims: int = 2048,
     ) -> None:
+        """Configure feature extraction and real-image statistics caching.
+
+        Args:
+            data_loader (DataLoader | None): Real-image loader on rank 0; other distributed ranks may pass ``None``.
+            batch_size (int): Target global batch size for generated images; ``data_loader`` controls real-image batches.
+            model (nn.Module): Diffusion model whose ``sample`` method produces RGB tensors in ``[0, 1]``.
+            dataset_stat_path (Path | str): Path for the real-image statistics cache.
+            device (torch.device, optional): Feature-extraction device. Defaults to ``torch.device("cuda:0")``.
+            num_samples (int, optional): Number of real and generated images. Defaults to 50000.
+            feature_dims (int, optional): Inception feature dimension; use 2048 for standard FID. Defaults to 2048.
+
+        Raises:
+            ValueError: If the batch size, sample count, feature dimension, or real dataset size is invalid.
+        """
         if batch_size < 1 or num_samples < 2:
             raise ValueError("FID requires a positive batch size and at least two samples")
         if feature_dims not in InceptionV3.BLOCK_INDEX_BY_DIM:
@@ -108,6 +149,14 @@ class FIDMetrics:
         self.m2 = self.s2 = None
 
     def _cache_signature(self, dataset) -> str:
+        """Hash dataset and preprocessing metadata used to validate cached statistics.
+
+        Args:
+            dataset (Dataset | None): Real-image dataset, or ``None`` on a non-main rank.
+
+        Returns:
+            str: SHA-256 digest including available image paths, sizes, and modification times.
+        """
         metadata = {
             "format": 2, "feature_dims": self.feature_dims, "num_samples": self.num_samples,
             "dataset": type(dataset).__qualname__ if dataset is not None else None,
@@ -124,13 +173,28 @@ class FIDMetrics:
         return digest.hexdigest()
 
     def calculate_inception_features(self, samples: torch.Tensor) -> torch.Tensor:
-        """Extract features from RGB tensors in the range [0, 1]."""
+        """Extract pooled Inception features from a batch of RGB images.
+
+        Args:
+            samples (torch.Tensor): RGB image batch with values in ``[0, 1]``.
+
+        Returns:
+            torch.Tensor: Feature matrix with one row per image.
+        """
         features = self.inception_v3(samples)[0]
         if features.shape[-2:] != (1, 1):
             features = F_torch.adaptive_avg_pool2d(features, (1, 1))
         return features.flatten(start_dim=1)
 
     def _cached_stats(self, path: Path):
+        """Read statistics only when their saved signature matches this dataset.
+
+        Args:
+            path (Path): Candidate NumPy cache file.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray] | None: Cached mean and covariance, or ``None`` if unavailable or incompatible.
+        """
         if not path.is_file():
             return None
         try:
@@ -143,7 +207,14 @@ class FIDMetrics:
 
     @torch.inference_mode()
     def load_dataset_stat(self) -> None:
-        """Load compatible statistics or calculate them from exactly num_samples images."""
+        """Load compatible real-image statistics or calculate and cache them.
+
+        Exactly ``num_samples`` real images are used. Incompatible cache files
+        are preserved and a separate cache is written.
+
+        Raises:
+            ValueError: If the loader provides fewer than ``num_samples`` images.
+        """
         path = self.dataset_stat_path
         stats = self._cached_stats(path)
         if path.exists() and stats is None:
@@ -175,6 +246,11 @@ class FIDMetrics:
 
     @torch.inference_mode()
     def calculate(self) -> float:
+        """Calculate single-process FID using the configured model and real dataset.
+
+        Returns:
+            float: Fréchet distance between generated and real Inception features.
+        """
         if not self.dataset_stat_loaded:
             self.load_dataset_stat()
         self.model.eval()
@@ -192,7 +268,18 @@ class FIDMetrics:
 
     @torch.inference_mode()
     def calculate_distributed(self) -> float:
-        """Generate exactly num_samples across ranks and compute FID on rank 0."""
+        """Generate samples across ranks and calculate FID on rank 0.
+
+        The exact requested sample count is divided between ranks. Rank 0
+        gathers generated features and broadcasts the resulting score. Without
+        an initialized multi-rank process group, this calls ``calculate``.
+
+        Returns:
+            float: FID score, identical on every participating rank.
+
+        Raises:
+            ValueError: If the Inception output does not match the configured feature dimension.
+        """
         if not dist.is_initialized() or dist.get_world_size() == 1:
             return self.calculate()
         rank, world_size = dist.get_rank(), dist.get_world_size()

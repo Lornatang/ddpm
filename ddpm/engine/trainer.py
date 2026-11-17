@@ -48,6 +48,11 @@ class EpochDistributedSampler(DistributedSampler):
     """Include the epoch in each index, including in persistent workers."""
 
     def __iter__(self):
+        """Yield image indices paired with the current epoch.
+
+        Returns:
+            Iterator[Tuple[int, int]]: ``(image_index, epoch)`` pairs for this rank.
+        """
         return ((index, self.epoch) for index in super().__iter__())
 
 
@@ -55,13 +60,30 @@ class ResumableBatchSampler(BatchSampler):
     """Seek in sampler indices without loading and transforming earlier images."""
 
     def __init__(self, sampler, batch_size, drop_last):
+        """Initialize the batch sampler and its starting batch.
+
+        Args:
+            sampler (Sampler): Sampler providing individual image indices.
+            batch_size (int): Number of indices per batch on this rank.
+            drop_last (bool): Whether to omit the final incomplete batch.
+        """
         super().__init__(sampler, batch_size, drop_last)
         self.start_batch = 0
 
     def __iter__(self):
+        """Skip completed batches and yield the remaining index batches.
+
+        Returns:
+            Iterator[list]: Batches beginning at ``start_batch``.
+        """
         return itertools.islice(super().__iter__(), self.start_batch, None)
 
     def __len__(self):
+        """Return the number of batches remaining after ``start_batch``.
+
+        Returns:
+            int: Number of batches left to iterate.
+        """
         return max(0, super().__len__() - self.start_batch)
 
 
@@ -97,6 +119,39 @@ class Trainer:
         resume_checkpoint: Union[dict, None] = None,
         fid_every: Union[int, None] = None,
     ) -> None:
+        """Configure distributed training, checkpointing, sampling, and FID.
+
+        Args:
+            model (nn.Module): Diffusion model with ``image_size``, a loss-producing forward method, and ``sample``.
+            root (Path | str): Directory containing training images.
+            augment (bool, optional): Enable horizontal flips. Defaults to ``False``.
+            resume (Path | str | None, optional): Trusted checkpoint to resume. Defaults to ``None``.
+            batch_size (int, optional): Global microbatch across ranks; must be divisible by world size. Defaults to 128.
+            num_workers (int, optional): DataLoader workers per rank. Defaults to 8.
+            gradient_accumulate_every (int, optional): Microbatches per optimizer step. Defaults to 1.
+            lr (float, optional): Adam learning rate. Defaults to 1e-4.
+            betas (Tuple[float, float], optional): Adam momentum coefficients. Defaults to ``(0.9, 0.999)``.
+            num_steps (int, optional): Total optimizer steps, including resumed steps. Defaults to 100000.
+            max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 1.0.
+            val (bool, optional): Enable training-time FID. Defaults to ``False``.
+            num_samples (int, optional): Number of images in each saved preview. Defaults to 64.
+            num_fid_samples (int, optional): Number of real and generated images used for FID. Defaults to 50000.
+            fid_stat_path (Path | str, optional): Real-image FID statistics cache. Defaults to ``"./datasets/stats/train.npz"``.
+            save_and_sample_every (int, optional): Optimizer-step interval for checkpoints and previews. Defaults to 1000.
+            save_dir (Path | str, optional): Output directory for a new run. Defaults to ``"./results/train"``.
+                A resumed run uses the directory containing the checkpoint's ``weights`` directory.
+            device (str, optional): CUDA device or ``"cpu"`` for testing. Defaults to ``"cuda"``; torchrun uses
+                ``LOCAL_RANK`` to select each CUDA device.
+            seed (int, optional): Base seed for model and data RNGs. Defaults to 0.
+            fid_feature_dims (int, optional): Inception feature dimension; 2048 is standard FID. Defaults to 2048.
+            resume_checkpoint (dict | None, optional): Already loaded checkpoint whose online weights are in ``model``.
+                Defaults to ``None``; when ``resume`` is supplied, its checkpoint is loaded during setup.
+            fid_every (int | None, optional): FID interval in optimizer steps. Defaults to ``None``, which uses
+                ``save_and_sample_every``.
+
+        Raises:
+            ValueError: If distributed ranks, batch size, or training intervals are invalid.
+        """
         self.rank = int(os.environ.get("RANK", "0"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         self.world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -153,6 +208,18 @@ class Trainer:
         self.last_saved_step = -1
 
     def _select_device(self, device: str) -> torch.device:
+        """Select the CPU or CUDA device for this rank.
+
+        Args:
+            device (str): Device specification; distributed CUDA runs use ``LOCAL_RANK``.
+
+        Returns:
+            torch.device: Selected local device.
+
+        Raises:
+            RuntimeError: If a CUDA device is requested but CUDA is unavailable.
+            ValueError: If the requested CUDA index is unavailable.
+        """
         device = str(device).lower()
         if device == "cpu":
             return torch.device("cpu")
@@ -172,6 +239,7 @@ class Trainer:
         return torch.device("cuda", index)
 
     def _setup_ddp(self) -> None:
+        """Initialize NCCL on CUDA or Gloo on CPU for multiple ranks."""
         if self.world_size > 1 and not dist.is_initialized():
             dist.init_process_group(
                 backend="nccl" if self.device.type == "cuda" else "gloo",
@@ -179,6 +247,14 @@ class Trainer:
             )
 
     def _setup_train(self) -> None:
+        """Build the model, data loader, optimizer, scaler, EMA, and optional FID metric.
+
+        A resumed checkpoint selects the legacy or stateless data pipeline and
+        restores training state after the corresponding objects are created.
+
+        Raises:
+            ValueError: If the checkpoint data mode is unsupported or the dataset cannot supply a complete batch.
+        """
         checkpoint, self._resume_checkpoint = self._resume_checkpoint, None
         if self.resume and checkpoint is None:
             self.model, checkpoint = load_checkpoint(self.resume, self.device, model=self.model, prefer_ema=False)
@@ -245,6 +321,11 @@ class Trainer:
             self.resume_training(checkpoint)
 
     def _rng_state(self) -> dict:
+        """Capture the current rank's Python, NumPy, PyTorch, and CUDA RNG states.
+
+        Returns:
+            dict: RNG states; ``cuda`` is ``None`` for a CPU run.
+        """
         return {
             "python": random.getstate(), "numpy": np.random.get_state(),
             "torch": torch.get_rng_state(),
@@ -252,6 +333,11 @@ class Trainer:
         }
 
     def _set_rng_state(self, state: dict) -> None:
+        """Restore the current rank's saved RNG states.
+
+        Args:
+            state (dict): State produced by ``_rng_state``.
+        """
         random.setstate(state["python"])
         np.random.set_state(state["numpy"])
         torch.set_rng_state(state["torch"].cpu())
@@ -259,6 +345,14 @@ class Trainer:
             torch.cuda.set_rng_state(state["cuda"].cpu(), self.device)
 
     def resume_training(self, checkpoint: dict) -> None:
+        """Restore optimizer, EMA, data position, and per-rank RNG state.
+
+        Args:
+            checkpoint (dict): Loaded checkpoint containing training state.
+
+        Raises:
+            ValueError: If the saved configuration, data position, or world size is incompatible.
+        """
         previous_config = checkpoint.get("resume_config")
         if previous_config is not None:
             mismatches = [key for key, value in self.resume_config.items() if previous_config.get(key) != value]
@@ -290,6 +384,15 @@ class Trainer:
         LOGGER.info(f"Resuming at step {self.current_step} of {self.num_steps}")
 
     def _next_batch(self):
+        """Return the next rank-local batch, restoring the saved epoch position if needed.
+
+        Returns:
+            torch.Tensor: Preprocessed image batch on the DataLoader's device.
+
+        Note:
+            Legacy checkpoints replay earlier batches to recover augmentation RNG state;
+            stateless checkpoints skip sampler indices without decoding those images.
+        """
         if self._loader_iter is None:
             self.train_sampler.set_epoch(self.data_epoch)
             self.data_generator.manual_seed(self.seed + self.data_epoch * self.world_size + self.rank)
@@ -310,6 +413,7 @@ class Trainer:
         return batch
 
     def optimizer_step(self) -> None:
+        """Apply a clipped AMP optimizer step and update EMA when the step succeeds."""
         self.scaler.unscale_(self.optimizer)
         nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
         old_scale = self.scaler.get_scale()
@@ -320,7 +424,15 @@ class Trainer:
             self.ema.update(self.model)
 
     def save_model(self, rng_states: list, is_best: bool = False) -> None:
-        """Save full precision online/EMA weights and resumable training state."""
+        """Save full-precision model weights and resumable training state.
+
+        Args:
+            rng_states (list[dict]): RNG state from each rank in rank order.
+            is_best (bool, optional): Update the best-FID checkpoint alias. Defaults to ``False``.
+
+        Note:
+            Checkpoint aliases use hard links when supported and fall back to copies.
+        """
         model = de_parallel(self.model)
         checkpoint = {
             "format_version": 3, "step": self.current_step,
@@ -349,6 +461,11 @@ class Trainer:
         self.last_saved_step = self.current_step
 
     def _save_checkpoint(self, is_best: bool = False) -> None:
+        """Gather rank-local RNG states and save a checkpoint on rank 0.
+
+        Args:
+            is_best (bool, optional): Update the best-FID checkpoint alias. Defaults to ``False``.
+        """
         local_rng = self._rng_state()
         if self.world_size > 1:
             rng_states = [None] * self.world_size if self.is_main else None
@@ -361,6 +478,7 @@ class Trainer:
             dist.barrier()
 
     def _save_samples(self) -> None:
+        """Save an EMA-generated image grid for the current step on rank 0."""
         self.ema.ema.eval()
         with torch.inference_mode():
             images = torch.cat([
@@ -371,6 +489,11 @@ class Trainer:
 
     @torch.no_grad()
     def _evaluate(self) -> bool:
+        """Calculate FID, synchronizing EMA weights and generated features across ranks.
+
+        Returns:
+            bool: ``True`` on rank 0 if the score improves the best FID; ``False`` otherwise.
+        """
         if self.world_size == 1:
             score = self.fid_metrics.calculate()
         else:
@@ -408,6 +531,11 @@ class Trainer:
         return False
 
     def train(self) -> None:
+        """Run optimizer steps, scheduled sampling, FID, and checkpointing.
+
+        Distributed workers participate in evaluation and checkpoint collectives;
+        the process group is destroyed when training finishes or fails.
+        """
         self._setup_ddp()
         try:
             self._setup_train()

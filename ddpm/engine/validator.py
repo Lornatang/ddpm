@@ -44,16 +44,18 @@ class Validator:
             num_workers: int = 8,
             feature_dims: int = 2048,
     ) -> None:
-        """Initializes the Validator class for model evaluation.
+        """Configure FID evaluation of a trusted checkpoint.
 
         Args:
-            model_weights_path (Union[Path, str]): Path to the pre-trained model weights.
-            root (Union[Path, str]): Root directory containing the dataset.
-            batch_size (int, optional): Batch size for validation. Defaults to 256.
-            num_fid_samples (int, optional): Number of samples to use for FID calculation. Defaults to 50000.
-            fid_stat_path (Union[Path, str], optional): Path to the FID statistics. Defaults to './datasets/stats/train.npz'.
-            save_dir (Union[Path, str], optional): Directory to save the validation results. Defaults to './results/val'.
-            device (str, optional): The device to use for computation. Defaults to '0' (CUDA).
+            model_weights_path (Path | str): Path to a trusted checkpoint; EMA weights are preferred.
+            root (Path | str): Directory containing real evaluation images.
+            batch_size (int, optional): Target global generation batch size and total preview count. Defaults to 256.
+            num_fid_samples (int, optional): Number of real and generated images used for FID. Defaults to 50000.
+            fid_stat_path (Path | str, optional): Real-image statistics cache. Defaults to ``"./datasets/stats/val.npz"``.
+            save_dir (Path | str, optional): Output directory for preview images. Defaults to ``"./results/val"``.
+            device (str, optional): Device specification. Defaults to ``"0"``; torchrun selects CUDA by local rank.
+            num_workers (int, optional): Real-image DataLoader workers on rank 0. Defaults to 8.
+            feature_dims (int, optional): Inception feature dimension; 2048 is standard FID. Defaults to 2048.
         """
         self.model_weights_path = model_weights_path
         self.root = root
@@ -83,10 +85,10 @@ class Validator:
         self.fid_metrics = None
 
     def validate(self) -> float:
-        """Perform model evaluation and calculate FID score.
+        """Save preview images and calculate FID, distributing work across ranks.
 
         Returns:
-            float: The FID score of the model on the validation dataset.
+            float: FID score, broadcast to every participating rank.
         """
         group = self.distributed
         try:
@@ -114,6 +116,11 @@ class Validator:
             group.close()
 
     def _make_fid(self):
+        """Construct the rank-local FID metric.
+
+        Returns:
+            FIDMetrics: Metric with the rank's model and optional real-image loader.
+        """
         return FIDMetrics(self.data_loader, self.batch_size, self.model,
                           dataset_stat_path=self.fid_stat_path, num_samples=self.num_fid_samples,
                           device=self.device, feature_dims=self.feature_dims)

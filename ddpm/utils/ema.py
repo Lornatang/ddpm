@@ -29,13 +29,13 @@ __all__ = [
 class ModelEMA:
 
     def __init__(self, model: nn.Module, decay: float = 0.9999, tau: int = 2000, updates: int = 0) -> None:
-        """Initialize the ModelEMA class.
+        """Initialize an evaluation-mode exponential moving average of the model.
 
         Args:
-            model (nn.Module): The original model to maintain EMA.
-            decay (float, optional): The decay rate for EMA, default is 0.9999.
-            tau (int, optional): Time constant for calculating dynamic decay rate, default is 2000.
-            updates (int, optional): Number of updates performed, default is 0.
+            model (nn.Module): Training model, optionally wrapped in a parallel module.
+            decay (float, optional): Maximum EMA decay. Defaults to 0.9999.
+            tau (int, optional): Time constant controlling decay warmup. Defaults to 2000.
+            updates (int, optional): Number of previous EMA updates. Defaults to 0.
         """
         # Copy the model and set it to evaluation mode
         self.ema = deepcopy(de_parallel(model)).eval()
@@ -57,8 +57,8 @@ class ModelEMA:
         Args:
             old_state_dict (Any): Target object.
             new_state_dict (Any): Source model.
-            include (Tuple, optional): Names of attributes to include, default is empty.
-            exclude (Tuple, optional): Names of attributes to exclude, default is empty.
+            include (Tuple, optional): Names to include; an empty tuple includes all public attributes. Defaults to ``()``.
+            exclude (Tuple, optional): Names to exclude. Defaults to ``()``.
         """
         # Iterate over all attributes of the new model
         for k, item in new_state_dict.__dict__.items():
@@ -69,10 +69,13 @@ class ModelEMA:
 
     @torch.no_grad()
     def update(self, model: nn.Module) -> None:
-        """Update the parameters of the EMA model using exponential moving average based on the current model's parameters and decay rate.
+        """Update floating-point EMA parameters and buffers from the training model.
 
         Args:
-            model (nn.Module): The current training model.
+            model (nn.Module): Current training model, optionally wrapped in a parallel module.
+
+        Note:
+            Non-floating buffers are left unchanged, and no update is performed when EMA is disabled.
         """
         # Increment the number of updates
         if self.enabled:
@@ -102,7 +105,7 @@ class ModelEMA:
 
         Args:
             model (nn.Module): The original model.
-            include (tuple, optional): Names of attributes to include.
-            exclude (tuple, optional): Names of attributes to exclude, default is ("process_group", "reducer").
+            include (tuple, optional): Names to include; an empty tuple includes all public attributes. Defaults to ``()``.
+            exclude (tuple, optional): Names to exclude. Defaults to ``("process_group", "reducer")``.
         """
         self.copy_attr(self.ema, model, include, exclude)

@@ -25,6 +25,11 @@ from ddpm.utils.torch_utils import select_device
 
 
 def get_opts() -> argparse.Namespace:
+    """Parse options for the reverse-diffusion visualization.
+
+    Returns:
+        argparse.Namespace: Parsed command-line options.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--weights",
@@ -73,10 +78,15 @@ def reverse_diffusion(
         model (torch.nn.Module): The trained diffusion model used for denoising.
         x_t (torch.Tensor): Input noise tensor of shape [B, C, H, W].
         num_time_steps (int): Total number of diffusion time steps.
-        device (Union[str, torch.device]): Device to run computation on.
+        device (str | torch.device): Device argument retained for compatibility; ``model`` and ``x_t`` must
+            already be on the intended device.
 
     Returns:
-        List[np.ndarray]: List of intermediate denoised images at every 100 time steps,  with values normalized to [0, 255].
+        List[np.ndarray]: First image in the batch at every 100th time step, mapped to the 8-bit image scale
+            without clipping.
+
+    Raises:
+        ValueError: If ``num_time_steps`` differs from the model's diffusion schedule.
     """
     if num_time_steps != model.num_time_steps:
         raise ValueError("num_time_steps must match the checkpoint schedule")
@@ -92,6 +102,11 @@ def reverse_diffusion(
 
 
 def main() -> None:
+    """Load a checkpoint and save a grid of reverse-diffusion states.
+
+    Raises:
+        ValueError: If the requested image size or time-step count differs from the checkpoint.
+    """
     opts = get_opts()
     weights = Path(opts.weights)
     output_path = Path(opts.output_path)

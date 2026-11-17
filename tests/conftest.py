@@ -22,11 +22,24 @@ from ddpm.models.unet import UNet
 
 
 def pytest_sessionstart(session):
+    """Limit PyTorch CPU threading for the test session.
+
+    Args:
+        session (pytest.Session): Session supplied by the pytest hook.
+    """
     torch.set_num_threads(1)
 
 
 @pytest.fixture
 def image_dir(tmp_path: Path):
+    """Create a directory containing eight small RGB images.
+
+    Args:
+        tmp_path (Path): Per-test temporary directory supplied by pytest.
+
+    Returns:
+        Path: Directory containing the test images.
+    """
     root = tmp_path / "images"
     root.mkdir()
     for i in range(8):
@@ -35,6 +48,15 @@ def image_dir(tmp_path: Path):
 
 
 def small_diffusion(*, self_condition=False, learned_variance=False):
+    """Build a small diffusion model for CPU and distributed smoke tests.
+
+    Args:
+        self_condition (bool, optional): Enable U-Net self-conditioning. Defaults to ``False``.
+        learned_variance (bool, optional): Enable learned variance output. Defaults to ``False``.
+
+    Returns:
+        GaussianDiffusion: Model configured for 8-by-8 RGB images.
+    """
     model = UNet(8, channels_multipliers=(1, 2), attn_heads=1, attn_dim_head=4,
                  self_condition=self_condition, learned_variance=learned_variance, dropout=0.1)
     return GaussianDiffusion(model, 8, time_steps=32, sampling_time_steps=3)

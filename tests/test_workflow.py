@@ -34,11 +34,29 @@ from conftest import small_diffusion
 
 
 def build_model():
+    """Build a reproducibly initialized small diffusion model.
+
+    Returns:
+        GaussianDiffusion: Model used by the workflow tests.
+    """
     torch.manual_seed(123)
     return small_diffusion()
 
 
 def make_trainer(root, output, *, steps, resume=None, val=False, save_every=100):
+    """Build a CPU trainer with the workflow tests' shared settings.
+
+    Args:
+        root (Path | str): Directory containing training images.
+        output (Path | str): Directory for a new run's outputs.
+        steps (int): Total number of optimizer steps.
+        resume (Path | str | None, optional): Checkpoint to resume. Defaults to ``None``.
+        val (bool, optional): Enable FID evaluation. Defaults to ``False``.
+        save_every (int, optional): Checkpoint and preview interval. Defaults to 100.
+
+    Returns:
+        Trainer: Configured CPU trainer.
+    """
     return Trainer(build_model(), root, augment=True, resume=resume, batch_size=2,
                    num_workers=0, num_steps=steps, save_and_sample_every=save_every,
                    num_samples=2, val=val, num_fid_samples=4, device="cpu",
@@ -46,6 +64,12 @@ def make_trainer(root, output, *, steps, resume=None, val=False, save_every=100)
 
 
 def assert_state_equal(first, second):
+    """Assert two state dictionaries have identical keys and tensor values.
+
+    Args:
+        first (dict): First state dictionary.
+        second (dict): State dictionary to compare against the first.
+    """
     assert first.keys() == second.keys()
     for name in first:
         torch.testing.assert_close(first[name], second[name], rtol=0, atol=0, msg=name)
@@ -110,25 +134,54 @@ def test_best_fid_is_saved_before_checkpoint(image_dir, tmp_path, monkeypatch):
 
 
 class SpyInception(nn.Module):
+    """Record image batches and expose channel means as test features."""
     BLOCK_INDEX_BY_DIM = {64: 0, 192: 1, 768: 2, 2048: 3}
     instances = []
 
     def __init__(self, blocks):
+        """Initialize the spy with an Inception-compatible signature.
+
+        Args:
+            blocks (list[int]): Requested Inception blocks; accepted for interface compatibility.
+        """
         super().__init__()
         self.batches = []
         self.instances.append(self)
 
     def forward(self, samples):
+        """Record images and return their spatial channel means.
+
+        Args:
+            samples (torch.Tensor): RGB image batch.
+
+        Returns:
+            list[torch.Tensor]: One feature-map batch with a channel per input channel.
+        """
         self.batches.append(samples.detach().cpu().clone())
         return [samples.mean(dim=(2, 3), keepdim=True)]
 
 
 class ReplayModel(nn.Module):
+    """Return predetermined samples in order for FID tests."""
+
     def __init__(self, samples):
+        """Initialize the sample sequence.
+
+        Args:
+            samples (torch.Tensor): Image batch to replay.
+        """
         super().__init__()
         self.samples, self.offset = samples, 0
 
     def sample(self, batch_size):
+        """Return the next slice of the stored samples.
+
+        Args:
+            batch_size (int): Number of samples to request.
+
+        Returns:
+            torch.Tensor: Next slice of the stored image batch.
+        """
         out = self.samples[self.offset:self.offset + batch_size]
         self.offset += batch_size
         return out
